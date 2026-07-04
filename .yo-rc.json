@@ -1,0 +1,12 @@
+{
+  "@microsoft/generator-sharepoint": {
+    "isCreatingSolution": true,
+    "environment": "spo",
+    "version": "1.18.2",
+    "libraryName": "smart-storage-analyzer",
+    "libraryId": "4c10f106-ac82-4037-9553-c3cfdfaa443b",
+    "packageManager": "npm",
+    "isDomainIsolated": false,
+    "componentType": "webpart"
+  }
+}

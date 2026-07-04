@@ -1,0 +1,25 @@
+{
+  "$schema": "https://developer.microsoft.com/json-schemas/spfx/client-side-web-part-manifest.schema.json",
+  "id": "4605c392-24dd-443d-8aaf-e3a125eff41b",
+  "alias": "SmartStorageAnalyzerWebPart",
+  "componentType": "WebPart",
+  "version": "*",
+  "manifestVersion": 2,
+  "requiresCustomScript": false,
+  "supportedHosts": ["SharePointWebPart"],
+  "supportsThemeVariants": true,
+  "preconfiguredEntries": [
+    {
+      "groupId": "5c03119e-3074-46fd-976b-c60198311f70",
+      "group": { "default": "Other" },
+      "title": { "default": "Smart Storage Analyzer" },
+      "description": {
+        "default": "Storage usage explorer and archival candidate report for SharePoint Online"
+      },
+      "iconImageUrl": "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCI+PHBhdGggZmlsbD0iIzYwNWU1YyIgZD0iTTUuNDIgNS4yN0EyLjI1IDIuMjUgMCAwIDEgNy40NCA0aDkuMTJjLjg2IDAgMS42NS41IDIuMDIgMS4yN2wzLjEgNi4zOWMuMi40NC4zMi45Mi4zMiAxLjQxdjMuNjhjMCAxLjI0LTEgMi4yNS0yLjI1IDIuMjVINC4yNUMzLjAxIDE5IDIgMTggMiAxNi43NXYtMy42OGMwLS40OS4xMS0uOTcuMzItMS40MWwzLjEtNi4zOVptMTEuODEuNjVhLjc1Ljc1IDAgMCAwLS42Ny0uNDJINy40NGEuNzUuNzUgMCAwIDAtLjY3LjQyTDQuMyAxMWgxNS4zOGwtMi40Ni01LjA4Wk0zLjUgMTMuMjV2My41YzAgLjQxLjM0Ljc1Ljc1Ljc1aDE1LjVjLjQxIDAgLjc1LS4zNC43NS0uNzV2LTMuNWEuNzUuNzUgMCAwIDAtLjc1LS43NUg0LjI1YS43NS43NSAwIDAgMC0uNzUuNzVaTTE4IDE2YTEgMSAwIDEgMCAwLTIgMSAxIDAgMCAwIDAgMloiLz48L3N2Zz4=",
+      "properties": {
+        "defaultView": "explorer"
+      }
+    }
+  ]
+}

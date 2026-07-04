@@ -1,0 +1,32 @@
+{
+  "$schema": "https://developer.microsoft.com/json-schemas/spfx-build/package-solution.schema.json",
+  "solution": {
+    "name": "Smart Storage Analyzer",
+    "id": "4c10f106-ac82-4037-9553-c3cfdfaa443b",
+    "version": "1.0.0.0",
+    "includeClientSideAssets": true,
+    "skipFeatureDeployment": true,
+    "isDomainIsolated": false,
+    "developer": {
+      "name": "",
+      "privacyUrl": "",
+      "termsOfUseUrl": "",
+      "websiteUrl": "",
+      "mpnId": ""
+    },
+    "metadata": {
+      "shortDescription": {
+        "default": "SharePoint Smart Storage Analyzer — storage usage explorer and archival candidate report"
+      },
+      "longDescription": {
+        "default": "SharePoint Smart Storage Analyzer — storage usage explorer and archival candidate report"
+      },
+      "screenshotPaths": [],
+      "videoUrl": "",
+      "categories": []
+    }
+  },
+  "paths": {
+    "zippedPackage": "solution/smart-storage-analyzer.sppkg"
+  }
+}

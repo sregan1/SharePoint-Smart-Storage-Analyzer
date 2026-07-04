@@ -1,0 +1,16 @@
+{
+  "$schema": "https://developer.microsoft.com/json-schemas/core-build/config.2.0.0-beta.17.json",
+  "version": "2.0",
+  "bundles": {
+    "smart-storage-analyzer-web-part": {
+      "components": [
+        {
+          "entrypoint": "./lib/webparts/smartStorageAnalyzer/SmartStorageAnalyzerWebPart.js",
+          "manifest": "./src/webparts/smartStorageAnalyzer/SmartStorageAnalyzerWebPart.manifest.json"
+        }
+      ]
+    }
+  },
+  "externals": {},
+  "localizedResources": {}
+}
