@@ -35,8 +35,5 @@ desktop.ini
 *.suo
 *.user
 
-# Generated documentation screenshots (regenerate with node docs/generate-screenshots.js)
-docs/screenshots/
-
 # Claude Code local session state — not project content
 .claude/
