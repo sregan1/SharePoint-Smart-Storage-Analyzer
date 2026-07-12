@@ -50,6 +50,10 @@ export interface ScanOptions {
   staleDays: number;
   veryStaleDays: number;
   scanConcurrency: number;
+  // Cooperative cancellation only: checked between queued tasks/libraries/
+  // sites, not passed into in-flight HTTP requests. A scan can be many
+  // minutes long with no other way to stop it short of leaving the page.
+  signal?: AbortSignal;
 }
 
 export interface ScanProgress {
@@ -67,6 +71,13 @@ export interface StorageReportSummary {
   staleSizeBytes: number;
   veryStaleSizeBytes: number;
   durationSeconds: number;
+  // Folders/subsites that could not be read (403, throttling exhausted,
+  // list view threshold, etc.) and were skipped rather than aborting the
+  // whole scan — so totals above may be partial. Optional so reports saved
+  // by older versions (IndexedDB history) still deserialize; treat a
+  // missing value as 0.
+  skippedFolders?: number;
+  skippedSites?: number;
 }
 
 export interface StoredReport {
@@ -76,6 +87,13 @@ export interface StoredReport {
   options: Pick<ScanOptions, 'includeSubsites' | 'staleDays' | 'veryStaleDays'>;
   summary: StorageReportSummary;
   entries: FileEntry[];
+  // Set when `entries` holds only stale/very-stale rows because the full
+  // scan exceeded the stored-history row cap (see StorageReportView) — kept
+  // small enough that 10 large scans don't strain IndexedDB quota. The
+  // summary and diffing (diffReports only reads stale-tier paths + summary
+  // fields) stay fully accurate either way; only the "View" file listing is
+  // incomplete for a truncated report.
+  entriesTruncated?: boolean;
 }
 
 export interface ReportDiff {

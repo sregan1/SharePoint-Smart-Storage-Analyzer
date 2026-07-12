@@ -6,6 +6,7 @@ import { CandidateTier, FileEntry, ScanOptions, ScanProgress, StorageReportSumma
 export interface ScanResult {
   entries: FileEntry[];
   summary: StorageReportSummary;
+  canceled: boolean;
 }
 
 // Orchestrates a full Storage Report scan: resolves the site + (optionally)
@@ -30,9 +31,12 @@ export async function scanSite(
   const entries: FileEntry[] = [];
   let libsDone = 0;
   let libsTotal = 0;
+  let skippedFolders = 0;
+  let skippedSites = 0;
   const librariesPerSite: { siteUrl: string; libraries: Awaited<ReturnType<typeof getLibraries>> }[] = [];
 
-  for (const siteUrl of sites) {
+  for (let i = 0; i < sites.length; i++) {
+    const siteUrl = sites[i];
     try {
       const libs = await getLibraries(client, siteUrl, options.includeHidden);
       const filtered = options.libraryUrls?.length
@@ -40,18 +44,28 @@ export async function scanSite(
         : libs;
       librariesPerSite.push({ siteUrl, libraries: filtered });
       libsTotal += filtered.length;
-    } catch {
-      // no access to this site's lists — skip silently, same as subsite discovery
+    } catch (err) {
+      // The requested site itself (index 0) failing means there is nothing
+      // to report — propagate so the caller shows "Scan failed" instead of
+      // a deceptively "successful" empty report. Subsites are best-effort:
+      // no access to a subsite's lists is expected and common (mirrors how
+      // subsite discovery itself skips inaccessible branches), so that
+      // stays a silent, counted skip rather than aborting the whole scan.
+      if (i === 0) throw err;
+      skippedSites++;
     }
   }
 
   for (const { siteUrl, libraries } of librariesPerSite) {
+    if (options.signal?.aborted) break;
     for (const library of libraries) {
+      if (options.signal?.aborted) break;
       onProgress({ message: `Scanning ${library.title}…`, scanned: entries.length, libsDone, libsTotal });
-      await walkLibrary(client, siteUrl, library, options, (entry) => {
+      const { skippedFolders: libSkipped } = await walkLibrary(client, siteUrl, library, options, (entry) => {
         entries.push(entry);
         onEntry?.(entry);
       });
+      skippedFolders += libSkipped;
       libsDone++;
       onProgress({ message: `Scanning ${library.title}…`, scanned: entries.length, libsDone, libsTotal });
     }
@@ -78,9 +92,13 @@ export async function scanSite(
       staleSizeBytes: 0,
       veryStaleSizeBytes: 0,
       durationSeconds: 0,
+      skippedFolders: 0,
+      skippedSites: 0,
     } as StorageReportSummary,
   );
   summary.durationSeconds = (Date.now() - start) / 1000;
+  summary.skippedFolders = skippedFolders;
+  summary.skippedSites = skippedSites;
 
-  return { entries, summary };
+  return { entries, summary, canceled: !!options.signal?.aborted };
 }

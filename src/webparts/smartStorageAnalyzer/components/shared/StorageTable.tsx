@@ -90,6 +90,15 @@ export function StorageTable<T>({ rows, columns, getRowKey, defaultSortKey, defa
               className={`${styles.th}${col.sortValue ? '' : ` ${styles.thStatic}`}`}
               style={{ textAlign: col.align ?? 'left' }}
               onClick={() => handleHeaderClick(col)}
+              role={col.sortValue ? 'button' : undefined}
+              tabIndex={col.sortValue ? 0 : undefined}
+              onKeyDown={col.sortValue ? (e) => {
+                if (e.key === 'Enter' || e.key === ' ') {
+                  e.preventDefault();
+                  handleHeaderClick(col);
+                }
+              } : undefined}
+              aria-sort={col.sortValue ? (sortKey === col.key ? (sortDir === 'asc' ? 'ascending' : 'descending') : 'none') : undefined}
             >
               <span style={{ display: 'inline-flex', alignItems: 'center', gap: '2px' }}>
                 {col.header}

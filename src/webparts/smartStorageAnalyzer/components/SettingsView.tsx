@@ -12,6 +12,7 @@ import {
   makeStyles,
 } from '@fluentui/react-components';
 import { ArrowLeft24Regular, Info16Regular } from '@fluentui/react-icons';
+import { clampConcurrency, clampStaleDays, clampVeryStaleDays } from '../utils/settingsBounds';
 
 const useStyles = makeStyles({
   root: {
@@ -138,7 +139,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
               min={1}
               max={veryStaleDays - 1}
               step={30}
-              onChange={(_, d) => onStaleDaysChange(d.value !== undefined ? d.value : parseInt(d.displayValue ?? '180', 10))}
+              onChange={(_, d) => onStaleDaysChange(clampStaleDays(d.value ?? d.displayValue))}
               style={{ width: '90px' }}
             />
           </div>
@@ -153,7 +154,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
               min={staleDays + 1}
               max={3650}
               step={30}
-              onChange={(_, d) => onVeryStaleDaysChange(d.value !== undefined ? d.value : parseInt(d.displayValue ?? '365', 10))}
+              onChange={(_, d) => onVeryStaleDaysChange(clampVeryStaleDays(d.value ?? d.displayValue, staleDays))}
               style={{ width: '90px' }}
             />
           </div>
@@ -174,7 +175,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
               value={scanConcurrency}
               min={1}
               max={15}
-              onChange={(_, d) => onScanConcurrencyChange(d.value !== undefined ? d.value : parseInt(d.displayValue ?? '6', 10))}
+              onChange={(_, d) => onScanConcurrencyChange(clampConcurrency(d.value ?? d.displayValue))}
               style={{ width: '80px' }}
             />
             <Tooltip

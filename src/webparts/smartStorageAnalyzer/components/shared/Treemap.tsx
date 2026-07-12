@@ -58,6 +58,14 @@ export const Treemap: React.FC<TreemapProps> = ({ items, height = 420, onFolderC
           <div
             key={r.id}
             onClick={clickable ? () => onFolderClick(r) : undefined}
+            role={clickable ? 'button' : undefined}
+            tabIndex={clickable ? 0 : undefined}
+            onKeyDown={clickable ? (e) => {
+              if (e.key === 'Enter' || e.key === ' ') {
+                e.preventDefault();
+                onFolderClick(r);
+              }
+            } : undefined}
             style={{
               position: 'absolute',
               left: `${r.x + 1}px`,

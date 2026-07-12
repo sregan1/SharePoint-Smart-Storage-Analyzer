@@ -4,6 +4,127 @@ All notable changes to this project are documented here.
 
 ---
 
+## [1.1.0] — 2026-07-11
+
+### Added
+
+- **Cancel a running Storage Report scan**
+  A Cancel button appears while a scan runs. Cancellation is cooperative
+  (checked between queued folders/libraries/sites), so it takes effect within
+  moments rather than instantly interrupting in-flight requests. Partial
+  results collected before cancellation are shown but not saved to history.
+
+- **Live file-count progress during a scan**
+  The "files scanned" counter now updates continuously while a single library
+  is being walked, instead of sitting at 0 until the whole library finishes.
+
+- **Partial-scan warnings**
+  A scan that could not read some folders (permission errors, throttling
+  exhaustion, etc.) or subsites now completes with a visible warning stating
+  how many were skipped, instead of silently under-reporting totals.
+
+- **Scan history: site awareness**
+  Each saved scan now shows which site it was run against. The history list
+  and the "compare two scans" feature default to the current site, with an
+  explicit toggle to show reports from other (sub)sites; comparing two
+  reports from different sites now shows a caution instead of a silent,
+  potentially meaningless diff.
+
+- **Scan history: bounded storage**
+  A scan whose file count would strain `IndexedDB` quota now saves only its
+  stale/very-stale rows (flagged "Partial" in the history list) — summaries
+  and scan comparisons are unaffected, since both only ever need stale-tier
+  data.
+
+- **Scan history: viewing context**
+  Reopening a saved scan now shows its timestamp, site, and displays the
+  archival-status legend using the thresholds *that scan* was classified
+  with, rather than whatever the current Settings happen to be.
+
+- **Keyboard accessibility**
+  Treemap folder cells and sortable table headers are now focusable and
+  operable from the keyboard (Enter/Space), with `aria-sort` reflecting the
+  active sort column.
+
+### Fixed
+
+- **Invalid concurrency/threshold values could hang the whole web part**
+  A corrupted `localStorage` value, or typing an out-of-range number directly
+  into a Settings spin button, could set scan concurrency to `NaN`/`0` —
+  which the scan queue treats as "never run anything," hanging every scan and
+  folder load indefinitely, permanently (the bad value was persisted). All
+  three settings (concurrency, stale/very-stale day thresholds) are now
+  clamped at every layer they pass through: on read, in the Settings UI, and
+  in the scan engine itself.
+
+- **A failed scan of the site itself could report as an empty success**
+  If the requested site's own document library listing failed (a transient
+  error, throttling), the scan previously completed with a "successful" empty
+  report instead of an error. Subsites still fail silently and are now
+  counted instead (see "Added" above).
+
+- **A scan whose results couldn't be saved to history reported as "Scan
+  failed"** even though the scan itself succeeded and its results were on
+  screen (e.g. an oversized report hitting `IndexedDB` quota). These are now
+  reported as separate, non-fatal warnings.
+
+- **A folder that failed to load could be cached as permanently empty**
+  A transient error while resolving a folder's contents (throttling, a
+  permission error) was cached as "this folder is empty" for the cache's
+  10-minute lifetime, and the Explorer showed no indication anything had
+  gone wrong. Failed folders are no longer cached, and the Explorer now
+  shows the underlying error instead of a false empty state.
+
+- **Storage Report scans could silently under-report totals**
+  Folders that failed mid-walk (permission errors, throttling, the list view
+  threshold) were dropped from the report with no indication — see the new
+  partial-scan warning above.
+
+- **Folder/file listings were never paginated**
+  Every `Files`/`Folders` API call fetched a single page; a folder with an
+  extremely large number of items could silently lose entries beyond that
+  page. These calls now follow SharePoint's paging links.
+
+- **Picture Libraries and Site Pages were never scanned**
+  The library query filtered to Document Libraries only, while the rest of
+  the app already treated Picture Libraries and Site Pages as scannable —
+  both can hold real storage and are now included everywhere.
+
+- **Changing archival thresholds didn't update already-loaded folders**
+  The Explorer cached a folder's file list with its Active/Stale/Very-stale
+  classification already computed; changing the thresholds in Settings and
+  revisiting a previously-viewed folder kept showing the old classification.
+  Classification is now computed at display time from the current
+  thresholds.
+
+- **CSV export was vulnerable to formula injection**
+  A file or author name starting with `=`, `+`, `-`, or `@` would be
+  interpreted as a formula by Excel/Sheets when the exported CSV was opened.
+  Such values are now neutralized with the standard leading-quote mitigation.
+
+- **Theme updates could apply a stale color**
+  The in-app theme was only recomputed when the site's primary brand color
+  changed, missing updates to the other palette shades.
+
+- **A very large folder listing could crash the Explorer**
+  Computing the largest size in a folder's file list used
+  `Math.max(1, ...values)`, which can throw once the argument count gets
+  large enough; replaced with a plain reduction.
+
+- **Scan history trimming could get stuck over its own limit**
+  Adding a new scan when history was already over its 10-report cap deleted
+  only one old report regardless of how far over the cap it was, so it could
+  never shrink back down. It now deletes as many as needed to settle at the
+  cap, and a rejected save no longer leaves the database connection open.
+
+### Changed
+
+- **Export dates are now real dates, not locale strings**
+  Excel exports write typed date cells (sortable/filterable), and CSV
+  exports use ISO `yyyy-mm-dd` instead of locale-formatted strings.
+
+---
+
 ## [1.0.0] — 2026-07-03
 
 ### Added

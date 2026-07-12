@@ -1,5 +1,6 @@
 import { WebPartContext } from '@microsoft/sp-webpart-base';
 import { SPHttpClient } from '@microsoft/sp-http';
+import { clampConcurrency } from '../../utils/settingsBounds';
 
 // Escape single-quotes in OData string literals (SQL-style doubling).
 export function odata(s: string): string {
@@ -14,9 +15,11 @@ export function odata(s: string): string {
 export function folderApi(siteUrl: string, serverRelativeUrl: string): string {
   return `${siteUrl}/_api/web/GetFolderByServerRelativePath(decodedUrl='${encodeURIComponent(odata(serverRelativeUrl))}')`;
 }
-export function fileApi(siteUrl: string, serverRelativeUrl: string): string {
-  return `${siteUrl}/_api/web/GetFileByServerRelativePath(decodedUrl='${encodeURIComponent(odata(serverRelativeUrl))}')`;
-}
+
+// Folder names SharePoint creates automatically that never hold user content.
+// Shared by every recursive walk (fileWalk.ts, storageMetrics.ts) so the
+// exclusion list can't drift between them.
+export const SYSTEM_FOLDER_NAMES = new Set(['forms']);
 
 // Single shared work queue with a global concurrency cap. Unlike nested
 // runConcurrent pools (which multiply: N workers each spawning N more per
@@ -65,13 +68,6 @@ export function valueArray(data: any): any[] {
   return [];
 }
 
-// Returns true when an API error indicates the current user lacks read
-// permission on the target (HTTP 403 Forbidden or 401 Unauthorized).
-export function isPermissionDenied(err: any): boolean {
-  const msg = String(err?.message ?? '');
-  return msg.includes('HTTP 403') || msg.includes('HTTP 401');
-}
-
 // Known system/infrastructure library URL suffixes (lowercased, site-relative).
 // Checked as a suffix so they match regardless of site path prefix.
 export const SYSTEM_LIB_SUFFIXES = [
@@ -94,14 +90,13 @@ export function isSystemLibrary(lib: any): boolean {
 // can be walked): 101 = Document Library, 109 = Picture Library, 119 = Site
 // Pages. Everything else is a generic list, not a storage-relevant target.
 export const LIBRARY_TEMPLATES = [101, 109, 119];
-export function isLibraryTemplate(baseTemplate: number): boolean {
-  return LIBRARY_TEMPLATES.indexOf(baseTemplate) !== -1;
-}
 
 // Shared API client: SPFx context plus the throttling-aware fetch helpers and
 // user-tunable scan settings. All sp/ modules take this as their first argument.
 export class SpApiClient {
   public readonly context: WebPartContext;
+  private _scanConcurrency = 6;
+
   /**
    * Max concurrent API requests during scans. Settable from Settings.
    * SharePoint Online doesn't publish a fixed throttling threshold (it's
@@ -109,8 +104,15 @@ export class SpApiClient {
    * measured limit — paired with the escalating-but-fast retry backoff in
    * getJson() below so pushing this higher fails gracefully instead of
    * stalling on a flat 10s wait per throttled request.
+   *
+   * Clamped on write: TaskQueue.pump() only ever runs a task while
+   * `active < concurrency`, so a NaN/0/negative value reaching it (a
+   * corrupted localStorage value, or a caller bypassing the Settings UI's
+   * own bounds) would never run anything and hang every scan/folder load
+   * forever instead of just misbehaving.
    */
-  public scanConcurrency = 6;
+  public get scanConcurrency(): number { return this._scanConcurrency; }
+  public set scanConcurrency(value: number) { this._scanConcurrency = clampConcurrency(value); }
 
   constructor(context: WebPartContext) {
     this.context = context;
@@ -144,10 +146,15 @@ export class SpApiClient {
   public async getJsonPaged(url: string, signal?: AbortSignal, maxPages = 50): Promise<any[]> {
     const all: any[] = [];
     let next: string | undefined = url;
-    for (let page = 0; next && page < maxPages && !signal?.aborted; page++) {
+    let page = 0;
+    for (; next && page < maxPages && !signal?.aborted; page++) {
       const data = await this.getJson(next);
       all.push(...valueArray(data));
       next = data?.['odata.nextLink'] ?? data?.['@odata.nextLink'] ?? data?.d?.__next;
+    }
+    if (next && page >= maxPages) {
+      // eslint-disable-next-line no-console
+      console.warn(`[SmartStorageAnalyzer] getJsonPaged: stopped after ${maxPages} pages with more results still available — ${url}`);
     }
     return all;
   }

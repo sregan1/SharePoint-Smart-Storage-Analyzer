@@ -17,7 +17,7 @@ import { ExcelExportService } from '../services/ExcelExportService';
 import { ExplorerView } from './ExplorerView';
 import { StorageReportView } from './StorageReportView';
 import { SettingsView } from './SettingsView';
-import { DEFAULT_STALE_DAYS, DEFAULT_VERY_STALE_DAYS } from '../utils/archivalClassification';
+import { clampConcurrency, clampStaleDays, clampVeryStaleDays } from '../utils/settingsBounds';
 
 export type AppView = 'explorer' | 'report' | 'settings';
 
@@ -133,7 +133,13 @@ try {
 }
 
 export const App: React.FC<AppProps> = ({ context, sp, excel, defaultView, brandColors }) => {
-  const theme = React.useMemo(() => buildTheme(brandColors), [brandColors.primary]);
+  // Depend on every palette slot, not just primary — a theme variant switch
+  // that keeps the same primary but changes the others (e.g. dark/light alt
+  // shades) would otherwise render with a stale theme object.
+  const theme = React.useMemo(
+    () => buildTheme(brandColors),
+    [brandColors.primary, brandColors.darkAlt, brandColors.dark, brandColors.darker, brandColors.light, brandColors.lighter],
+  );
 
   const [view, setView] = React.useState<AppView>(defaultView ?? 'explorer');
   const [prevView, setPrevView] = React.useState<AppView>('explorer');
@@ -149,13 +155,13 @@ export const App: React.FC<AppProps> = ({ context, sp, excel, defaultView, brand
     () => localStorage.getItem(LS_SUBSITES) === 'true',
   );
   const [scanConcurrency, setScanConcurrency] = React.useState(
-    () => parseInt(localStorage.getItem(LS_CONCURRENCY) ?? '6', 10),
+    () => clampConcurrency(localStorage.getItem(LS_CONCURRENCY)),
   );
   const [staleDays, setStaleDays] = React.useState(
-    () => parseInt(localStorage.getItem(LS_STALE_DAYS) ?? String(DEFAULT_STALE_DAYS), 10),
+    () => clampStaleDays(localStorage.getItem(LS_STALE_DAYS)),
   );
   const [veryStaleDays, setVeryStaleDays] = React.useState(
-    () => parseInt(localStorage.getItem(LS_VERY_STALE_DAYS) ?? String(DEFAULT_VERY_STALE_DAYS), 10),
+    () => clampVeryStaleDays(localStorage.getItem(LS_VERY_STALE_DAYS), clampStaleDays(localStorage.getItem(LS_STALE_DAYS))),
   );
 
   React.useEffect(() => { localStorage.setItem(LS_HIDDEN, String(includeHidden)); }, [includeHidden]);
@@ -166,6 +172,15 @@ export const App: React.FC<AppProps> = ({ context, sp, excel, defaultView, brand
   }, [scanConcurrency]);
   React.useEffect(() => { localStorage.setItem(LS_STALE_DAYS, String(staleDays)); }, [staleDays]);
   React.useEffect(() => { localStorage.setItem(LS_VERY_STALE_DAYS, String(veryStaleDays)); }, [veryStaleDays]);
+
+  // Re-checked whenever staleDays changes (not just at load) because
+  // veryStaleDays is a separately-stored value that may not move in the same
+  // interaction — without this, raising "Stale after" past the current
+  // "Very stale after" would leave an invalid combination in state even
+  // though each value is individually within its own bounds.
+  React.useEffect(() => {
+    setVeryStaleDays((v) => clampVeryStaleDays(v, staleDays));
+  }, [staleDays]);
 
   const [canManageWeb, setCanManageWeb] = React.useState<boolean | null>(null);
 

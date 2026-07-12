@@ -1,9 +1,6 @@
-import { SpApiClient, folderApi, valueArray, TaskQueue } from './spCore';
+import { SpApiClient, folderApi, SYSTEM_FOLDER_NAMES, TaskQueue } from './spCore';
 import { FolderStorageNode } from '../../models/models';
 import { getCachedFolderChildren, setCachedFolderChildren } from './folderSizeCache';
-
-// Folder names SharePoint creates automatically that never hold user content.
-const SYSTEM_FOLDER_NAMES = new Set(['forms']);
 
 interface RawMetrics {
   totalSizeBytes: number;
@@ -25,12 +22,16 @@ export async function getStorageMetrics(
 ): Promise<RawMetrics | undefined> {
   try {
     const data = await client.getJson(`${folderApi(siteUrl, serverRelativeUrl)}/StorageMetrics`);
-    const totalSizeBytes = Number(data?.TotalSize ?? data?.TotalFileStreamSize);
+    // Legacy verbose OData nests the payload under `d` — unwrapped here so a
+    // verbose-mode response doesn't miss both fields and force an
+    // unnecessary full walk as if the endpoint were unavailable.
+    const m = data?.d ?? data;
+    const totalSizeBytes = Number(m?.TotalSize ?? m?.TotalFileStreamSize);
     if (!isFinite(totalSizeBytes)) return undefined;
     return {
       totalSizeBytes,
-      fileCount: Number(data?.TotalFileCount ?? 0),
-      lastModified: data?.LastModified as string | undefined,
+      fileCount: Number(m?.TotalFileCount ?? 0),
+      lastModified: m?.LastModified as string | undefined,
     };
   } catch {
     return undefined;
@@ -49,6 +50,13 @@ interface WalkNode {
   acc: RawMetrics;
   pendingChildren: number;
   childNodes: FolderStorageNode[];
+  // Set when this node's own listing failed, or any descendant's did — see
+  // finishNode. An errored node's immediate-children breakdown is
+  // incomplete, so it must never be written to folderSizeCache: caching it
+  // would let a transient throttle/403 poison the cache for its full TTL,
+  // with the Explorer confidently rendering the folder as empty rather than
+  // unreadable.
+  errored?: boolean;
 }
 
 // Recursively walks one folder's subtree on a caller-supplied TaskQueue.
@@ -78,17 +86,17 @@ function walkFolderSubtree(
   queue.add(async () => {
     try {
       const [filesData, foldersData] = await Promise.all([
-        client.getJson(`${folderApi(siteUrl, node.url)}/Files?$select=Length,TimeLastModified`),
-        client.getJson(`${folderApi(siteUrl, node.url)}/Folders?$select=Name,ServerRelativeUrl,TimeLastModified`),
+        client.getJsonPaged(`${folderApi(siteUrl, node.url)}/Files?$select=Length,TimeLastModified&$top=5000`),
+        client.getJsonPaged(`${folderApi(siteUrl, node.url)}/Folders?$select=Name,ServerRelativeUrl,TimeLastModified&$top=5000`),
       ]);
-      for (const f of valueArray(filesData)) {
+      for (const f of filesData) {
         node.acc.totalSizeBytes += Number(f.Length ?? 0);
         node.acc.fileCount++;
         const m = f.TimeLastModified as string;
         if (m && (!node.acc.lastModified || m > node.acc.lastModified)) node.acc.lastModified = m;
       }
 
-      const subFolders = valueArray(foldersData).filter(
+      const subFolders = foldersData.filter(
         (f: any) => !SYSTEM_FOLDER_NAMES.has(String(f.Name).toLowerCase()),
       );
       if (subFolders.length === 0) {
@@ -112,6 +120,7 @@ function walkFolderSubtree(
       // Inaccessible subtree — this node keeps whatever partial total it
       // had (usually 0) and still finishes/caches normally so its parent
       // isn't left waiting forever on a branch that will never resolve.
+      node.errored = true;
       finishNode(siteUrl, node, onRootDone);
     }
   });
@@ -123,7 +132,9 @@ function walkFolderSubtree(
 // the same completion check up the tree — or, at the root, hands the final
 // total back to the caller.
 function finishNode(siteUrl: string, node: WalkNode, onRootDone: (acc: RawMetrics) => void): void {
-  setCachedFolderChildren(siteUrl, node.url, node.childNodes.sort((a, b) => b.totalSizeBytes - a.totalSizeBytes));
+  if (!node.errored) {
+    setCachedFolderChildren(siteUrl, node.url, node.childNodes.sort((a, b) => b.totalSizeBytes - a.totalSizeBytes));
+  }
 
   const parent = node.parent;
   if (!parent) {
@@ -135,6 +146,10 @@ function finishNode(siteUrl: string, node: WalkNode, onRootDone: (acc: RawMetric
   if (node.acc.lastModified && (!parent.acc.lastModified || node.acc.lastModified > parent.acc.lastModified)) {
     parent.acc.lastModified = node.acc.lastModified;
   }
+  // Propagate so an ancestor of a failed branch is not cached either — its
+  // own childNodes list would otherwise look complete while one entry's
+  // total silently reflects only a partial subtree.
+  if (node.errored) parent.errored = true;
   parent.childNodes.push({
     name: node.name,
     serverRelativeUrl: node.url,
@@ -203,10 +218,10 @@ export async function getFolderChildren(
   const cached = getCachedFolderChildren(siteUrl, parentServerRelativeUrl);
   if (cached) return cached;
 
-  const listData = await client.getJson(
-    `${folderApi(siteUrl, parentServerRelativeUrl)}/Folders?$select=Name,ServerRelativeUrl,ItemCount,TimeLastModified`,
+  const listData = await client.getJsonPaged(
+    `${folderApi(siteUrl, parentServerRelativeUrl)}/Folders?$select=Name,ServerRelativeUrl,ItemCount,TimeLastModified&$top=5000`,
   );
-  const rawFolders = valueArray(listData).filter(
+  const rawFolders = listData.filter(
     (f: any) => !SYSTEM_FOLDER_NAMES.has(String(f.Name).toLowerCase()),
   );
   const total = rawFolders.length;
@@ -277,10 +292,10 @@ export async function getFolderFiles(
   siteUrl: string,
   serverRelativeUrl: string,
 ): Promise<{ name: string; serverRelativeUrl: string; sizeBytes: number; timeCreated: string; timeLastModified: string; authorLoginName?: string; authorDisplayName?: string }[]> {
-  const data = await client.getJson(
-    `${folderApi(siteUrl, serverRelativeUrl)}/Files?$select=Name,ServerRelativeUrl,Length,TimeCreated,TimeLastModified,Author/Title,Author/LoginName&$expand=Author`,
+  const files = await client.getJsonPaged(
+    `${folderApi(siteUrl, serverRelativeUrl)}/Files?$select=Name,ServerRelativeUrl,Length,TimeCreated,TimeLastModified,Author/Title,Author/LoginName&$expand=Author&$top=5000`,
   );
-  return valueArray(data).map((f: any) => ({
+  return files.map((f: any) => ({
     name: f.Name,
     serverRelativeUrl: f.ServerRelativeUrl,
     sizeBytes: Number(f.Length ?? 0),

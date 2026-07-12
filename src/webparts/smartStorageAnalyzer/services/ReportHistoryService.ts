@@ -26,29 +26,41 @@ export class ReportHistoryService {
     return new Promise((resolve, reject) => {
       const tx = db.transaction(STORE_NAME, 'readwrite');
       const store = tx.objectStore(STORE_NAME);
+      const fail = (err: any): void => { db.close(); reject(err); };
 
       const countReq = store.count();
       countReq.onsuccess = () => {
         const doAdd = (): void => {
           store.put(report);
           tx.oncomplete = () => { db.close(); resolve(); };
-          tx.onerror = () => { db.close(); reject(tx.error); };
+          tx.onerror = () => fail(tx.error);
         };
 
-        if (countReq.result >= MAX_REPORTS) {
-          // Delete the oldest report (lowest timestamp) to stay within limit
+        // Trim to exactly MAX_REPORTS oldest-first, not just one — a single
+        // delete only keeps the store from growing when it was already at
+        // the limit; if it were ever more than one over (a version that
+        // shipped without this trim, direct DB access, etc.), that excess
+        // would never shrink back down since each add() would delete one
+        // and add one, net zero.
+        let toDelete = countReq.result - MAX_REPORTS + 1;
+        if (toDelete > 0) {
           const cursorReq = store.index('timestamp').openCursor(null, 'next');
           cursorReq.onsuccess = (e) => {
             const cursor = (e.target as IDBRequest<IDBCursorWithValue>).result;
-            if (cursor) store.delete(cursor.primaryKey);
-            doAdd();
+            if (cursor && toDelete > 0) {
+              store.delete(cursor.primaryKey);
+              toDelete--;
+              cursor.continue();
+            } else {
+              doAdd();
+            }
           };
-          cursorReq.onerror = () => reject(cursorReq.error);
+          cursorReq.onerror = () => fail(cursorReq.error);
         } else {
           doAdd();
         }
       };
-      countReq.onerror = () => reject(countReq.error);
+      countReq.onerror = () => fail(countReq.error);
     });
   }
 

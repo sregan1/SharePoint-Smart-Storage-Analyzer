@@ -57,6 +57,20 @@ interface FolderFileRow {
   tier: CandidateTier;
 }
 
+// Raw shape cached per folder — NOT the derived FolderFileRow. Caching the
+// derived tier/ageDays would freeze a folder's file list at whatever
+// staleDays/veryStaleDays were in effect the first time it loaded; changing
+// the archival thresholds in Settings and revisiting a previously-viewed
+// folder would then silently show stale (pun intended) classifications that
+// disagree with the legend. Deriving at read time keeps it always current.
+interface RawFolderFile {
+  name: string;
+  serverRelativeUrl: string;
+  sizeBytes: number;
+  timeLastModified: string;
+  authorDisplayName?: string;
+}
+
 export interface ExplorerViewProps {
   sp: StorageAnalyzerService;
   excel: ExcelExportService;
@@ -85,7 +99,7 @@ export const ExplorerView: React.FC<ExplorerViewProps> = ({
 
   const [selectedFiles, setSelectedFiles] = React.useState<FolderFileRow[]>([]);
   const [filesLoading, setFilesLoading] = React.useState(false);
-  const filesCache = React.useRef<Map<string, FolderFileRow[]>>(new Map());
+  const filesCache = React.useRef<Map<string, RawFolderFile[]>>(new Map());
 
   // Load the library list once per site and seed the default document library.
   React.useEffect(() => {
@@ -123,10 +137,18 @@ export const ExplorerView: React.FC<ExplorerViewProps> = ({
     // to the .then() with the complete result.
     sp.getFolderChildren(siteUrl, url, (done, total) => { setChildrenProgress({ done, total }); })
       .then((children) => {
+        setError('');
         childrenCache.current.set(url, children);
         children.forEach((c) => parentOf.current.set(c.serverRelativeUrl, { name: c.name, url }));
       })
-      .catch(() => { childrenCache.current.set(url, []); })
+      .catch((err: any) => {
+        // Still cache [] so this folder doesn't re-fire the load on every
+        // render, but surface the failure — silently treating a fetch
+        // failure as "this folder is empty" would misreport a permissions
+        // error or throttling exhaustion as an actual empty folder.
+        childrenCache.current.set(url, []);
+        setError(`Failed to load folder contents: ${err?.message ?? String(err)}`);
+      })
       .finally(() => {
         setChildrenLoading(false);
         setChildrenProgress(null);
@@ -138,25 +160,25 @@ export const ExplorerView: React.FC<ExplorerViewProps> = ({
   // Fetch immediate files whenever the selected folder changes.
   React.useEffect(() => {
     if (!selectedUrl) return;
+    const toRows = (files: RawFolderFile[]): FolderFileRow[] => files.map((f) => {
+      const ageDays = ageInDays(f.timeLastModified);
+      return {
+        name: f.name,
+        serverRelativeUrl: f.serverRelativeUrl,
+        sizeBytes: f.sizeBytes,
+        timeLastModified: f.timeLastModified,
+        authorDisplayName: f.authorDisplayName,
+        ageDays,
+        tier: classify(ageDays, staleDays, veryStaleDays),
+      };
+    });
     const cached = filesCache.current.get(selectedUrl);
-    if (cached) { setSelectedFiles(cached); return; }
+    if (cached) { setSelectedFiles(toRows(cached)); return; }
     setFilesLoading(true);
     sp.getFolderFiles(siteUrl, selectedUrl)
       .then((files) => {
-        const rows: FolderFileRow[] = files.map((f) => {
-          const ageDays = ageInDays(f.timeLastModified);
-          return {
-            name: f.name,
-            serverRelativeUrl: f.serverRelativeUrl,
-            sizeBytes: f.sizeBytes,
-            timeLastModified: f.timeLastModified,
-            authorDisplayName: f.authorDisplayName,
-            ageDays,
-            tier: classify(ageDays, staleDays, veryStaleDays),
-          };
-        });
-        filesCache.current.set(selectedUrl, rows);
-        setSelectedFiles(rows);
+        filesCache.current.set(selectedUrl, files);
+        setSelectedFiles(toRows(files));
       })
       .catch(() => setSelectedFiles([]))
       .finally(() => setFilesLoading(false));
@@ -240,7 +262,13 @@ export const ExplorerView: React.FC<ExplorerViewProps> = ({
       authorDisplayName: f.authorDisplayName,
     })),
   ], [selectedChildren, selectedFiles]);
-  const maxListSize = Math.max(1, ...listRows.map((r) => r.sizeBytes));
+  // reduce, not Math.max(1, ...listRows.map(...)) — spreading tens of
+  // thousands of arguments into Math.max risks a RangeError on very large
+  // folders.
+  const maxListSize = React.useMemo(
+    () => listRows.reduce((max, r) => Math.max(max, r.sizeBytes), 1),
+    [listRows],
+  );
 
   const listColumns: StorageTableColumn<FolderListRow>[] = [
     {
@@ -391,7 +419,7 @@ export const ExplorerView: React.FC<ExplorerViewProps> = ({
                     items={treemapItems}
                     onFolderClick={(item) => setSelectedUrl(item.id)}
                   />
-                  {treemapItems.length === 0 && (
+                  {treemapItems.length === 0 && !error && (
                     <Body1 style={{ color: tokens.colorNeutralForeground3, marginTop: tokens.spacingVerticalM }}>
                       This folder has no subfolders or files.
                     </Body1>
@@ -414,7 +442,7 @@ export const ExplorerView: React.FC<ExplorerViewProps> = ({
               </div>
               {childrenLoading || filesLoading ? (
                 loadingIndicator
-              ) : listRows.length === 0 ? (
+              ) : listRows.length === 0 && !error ? (
                 <Body1 style={{ color: tokens.colorNeutralForeground3 }}>This folder is empty.</Body1>
               ) : (
                 <StorageTable rows={listRows} columns={listColumns} getRowKey={(r) => r.serverRelativeUrl} defaultSortKey="size" />

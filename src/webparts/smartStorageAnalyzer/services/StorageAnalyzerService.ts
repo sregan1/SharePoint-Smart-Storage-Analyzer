@@ -34,10 +34,6 @@ export class StorageAnalyzerService {
     return siteDiscovery.checkCanManageWeb(this.client, siteUrl);
   }
 
-  getSiteOwners(siteUrl: string): Promise<siteDiscovery.SiteOwnerInfo[]> {
-    return siteDiscovery.getSiteOwners(this.client, siteUrl);
-  }
-
   // ── Library Overview ──────────────────────────────────────────────────────
 
   getLibrariesWithStats(siteUrl: string, includeHidden: boolean): Promise<LibraryInfo[]> {

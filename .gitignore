@@ -37,3 +37,6 @@ desktop.ini
 
 # Claude Code local session state — not project content
 .claude/
+
+# Local scratch planning docs — not project content
+IMPROVEMENT-PLAN.md

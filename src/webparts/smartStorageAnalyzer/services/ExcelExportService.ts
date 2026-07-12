@@ -44,6 +44,29 @@ function argbFill(hex: string): ExcelJS.Fill {
   return { type: 'pattern', pattern: 'solid', fgColor: { argb: hex } };
 }
 
+// Writes a real typed Date (with a date number format) rather than a
+// locale-formatted string, so Excel can sort/filter these columns
+// chronologically instead of alphabetically. Falls back to an empty cell for
+// an unparseable timestamp — exceljs serializes Date values via
+// toISOString() internally, which throws on an Invalid Date.
+function setExcelDate(cell: ExcelJS.Cell, iso: string): void {
+  const d = new Date(iso);
+  if (isFinite(d.getTime())) {
+    cell.value = d;
+    cell.numFmt = 'yyyy-mm-dd';
+  } else {
+    cell.value = '';
+  }
+}
+
+// ISO (yyyy-mm-dd) rather than toLocaleDateString() for CSV — sorts
+// correctly as plain text and isn't ambiguous across locales (dd/mm vs
+// mm/dd). Empty string for an unparseable timestamp.
+function isoDate(iso: string): string {
+  const d = new Date(iso);
+  return isFinite(d.getTime()) ? d.toISOString().slice(0, 10) : '';
+}
+
 function timestampSuffix(): string {
   return new Date().toISOString().replace(/[-:T]/g, '').substring(0, 15).replace('.', '');
 }
@@ -135,8 +158,8 @@ export class ExcelExportService {
       row.getCell(3).value = entry.name;
       row.getCell(4).value = formatBytes(entry.sizeBytes);
       row.getCell(5).value = entry.sizeBytes;
-      row.getCell(6).value = new Date(entry.timeCreated).toLocaleDateString();
-      row.getCell(7).value = new Date(entry.timeLastModified).toLocaleDateString();
+      setExcelDate(row.getCell(6), entry.timeCreated);
+      setExcelDate(row.getCell(7), entry.timeLastModified);
       row.getCell(8).value = entry.ageDays;
       row.getCell(9).value = entry.authorDisplayName ?? '';
 
@@ -164,7 +187,18 @@ export class ExcelExportService {
   // ── CSV export ────────────────────────────────────────────────────────────
 
   private csvEscape(v: string | number): string {
-    const s = String(v);
+    let s = String(v);
+    // CSV formula injection guard (OWASP-recommended mitigation): a leading
+    // =, +, -, @, tab, or CR makes Excel/Sheets interpret the cell as a
+    // formula when the file is opened — file/author names are
+    // attacker-influenceable in a shared tenant. Prefixing with a single
+    // quote forces text interpretation; Excel does not display the quote
+    // itself. Applied unconditionally rather than only to "text" columns —
+    // no current column emits a leading '-' from a legitimate value (sizes/
+    // ages are always >= 0), so there's nothing to special-case.
+    if (/^[=+\-@\t\r]/.test(s)) {
+      s = `'${s}`;
+    }
     return s.includes(',') || s.includes('"') || s.includes('\n')
       ? `"${s.replace(/"/g, '""')}"`
       : s;
@@ -186,8 +220,8 @@ export class ExcelExportService {
         e.serverRelativeUrl,
         e.name,
         String(e.sizeBytes),
-        new Date(e.timeCreated).toLocaleDateString(),
-        new Date(e.timeLastModified).toLocaleDateString(),
+        isoDate(e.timeCreated),
+        isoDate(e.timeLastModified),
         String(e.ageDays),
         e.authorDisplayName ?? '',
         e.tier,
@@ -226,7 +260,7 @@ export class ExcelExportService {
       row.getCell(3).value = formatBytes(r.sizeBytes);
       row.getCell(4).value = r.sizeBytes;
       row.getCell(5).value = r.itemCount ?? '';
-      row.getCell(6).value = r.lastModified ? new Date(r.lastModified).toLocaleDateString() : '';
+      if (r.lastModified) setExcelDate(row.getCell(6), r.lastModified); else row.getCell(6).value = '';
       row.getCell(7).value = r.ageDays ?? '';
       row.getCell(8).value = r.authorDisplayName ?? '';
       if (r.kind === 'file' && r.tier) {
@@ -266,7 +300,7 @@ export class ExcelExportService {
         r.name,
         String(r.sizeBytes),
         r.itemCount != null ? String(r.itemCount) : '',
-        r.lastModified ? new Date(r.lastModified).toLocaleDateString() : '',
+        r.lastModified ? isoDate(r.lastModified) : '',
         r.ageDays != null ? String(r.ageDays) : '',
         r.authorDisplayName ?? '',
         r.tier ?? '',

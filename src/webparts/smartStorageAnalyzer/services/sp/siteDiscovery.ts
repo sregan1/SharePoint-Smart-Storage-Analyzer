@@ -1,4 +1,4 @@
-import { SpApiClient, isSystemLibrary, valueArray } from './spCore';
+import { SpApiClient, isSystemLibrary, LIBRARY_TEMPLATES, valueArray } from './spCore';
 import { LibraryInfo } from '../../models/models';
 
 // GETs _api/web?$select=EffectiveBasePermissions and checks whether the
@@ -16,22 +16,6 @@ export async function checkCanManageWeb(client: SpApiClient, siteUrl: string): P
   }
 }
 
-export interface SiteOwnerInfo {
-  displayName: string;
-  email?: string;
-}
-
-export async function getSiteOwners(client: SpApiClient, siteUrl: string): Promise<SiteOwnerInfo[]> {
-  try {
-    const data = await client.getJson(
-      `${siteUrl}/_api/web/AssociatedOwnerGroup/users?$select=Title,Email`,
-    );
-    return valueArray(data).map((u: any) => ({ displayName: u.Title, email: u.Email || undefined }));
-  } catch {
-    return [];
-  }
-}
-
 // Document/picture/site-pages libraries on a single web (not recursive into
 // subwebs — callers that support includeSubsites loop this per subweb URL).
 export async function getLibraries(
@@ -39,9 +23,16 @@ export async function getLibraries(
   siteUrl: string,
   includeHidden: boolean,
 ): Promise<LibraryInfo[]> {
+  // Built from LIBRARY_TEMPLATES (spCore.ts) rather than hardcoding
+  // "eq 101" so the walkable-template list can't drift from the constant
+  // that everything else keys off — this used to only ever request 101
+  // (Document Library), silently excluding Picture Libraries (109) and Site
+  // Pages (119) from every scan/rollup despite both being able to hold
+  // real storage.
+  const templateFilter = LIBRARY_TEMPLATES.map((t) => `BaseTemplate eq ${t}`).join(' or ');
   const data = await client.getJson(
     `${siteUrl}/_api/web/lists?$select=Title,BaseTemplate,ItemCount,NoCrawl,RootFolder/ServerRelativeUrl,RootFolder/TimeLastModified,IsSiteAssetsLibrary,Hidden` +
-      `&$expand=RootFolder&$filter=BaseTemplate eq 101`,
+      `&$expand=RootFolder&$filter=(${templateFilter})`,
   );
   const lists = valueArray(data);
   return lists
