@@ -1,12 +1,18 @@
 import * as React from 'react';
-import { Text, Tooltip, tokens } from '@fluentui/react-components';
+import { Spinner, Text, Tooltip, tokens } from '@fluentui/react-components';
 import { CandidateTier, TreemapItem, TreemapRect } from '../../models/models';
 import { layoutTreemap } from '../../utils/treemapLayout';
 import { FOLDER_COLOR, OTHER_COLOR, TIER_COLORS, tierLabel } from './tierBadge';
 import { formatBytes, formatAge } from './formatBytes';
 
+// Diagonal stripes (rather than a solid fill) for a folder whose size
+// couldn't be determined — visually distinct at a glance from a genuinely
+// small/empty folder, which would otherwise be an identically-colored,
+// merely small rectangle.
+const UNKNOWN_SIZE_PATTERN = 'repeating-linear-gradient(45deg, #a36200, #a36200 6px, #c77f00 6px, #c77f00 12px)';
+
 function cellColor(item: TreemapRect): string {
-  if (item.kind === 'folder') return FOLDER_COLOR.light;
+  if (item.kind === 'folder') return item.sizeUnknown ? UNKNOWN_SIZE_PATTERN : FOLDER_COLOR.light;
   if (item.kind === 'other') return OTHER_COLOR.light;
   return TIER_COLORS[item.tier ?? CandidateTier.Active].light;
 }
@@ -14,11 +20,19 @@ function cellColor(item: TreemapRect): string {
 function cellTooltip(item: TreemapRect): string {
   if (item.kind === 'other') return `${item.label} — ${formatBytes(item.sizeBytes)}`;
   if (item.kind === 'folder') {
+    if (item.sizeUnknown) {
+      return `${item.label} (folder) — size unknown: SharePoint throttling or an error kept this from being measured. Not a confirmed empty folder — try again in a moment.`;
+    }
     const fileCount = item.itemCount != null ? `, ${item.itemCount} file${item.itemCount === 1 ? '' : 's'}` : '';
     return `${item.label} (folder) — ${formatBytes(item.sizeBytes)}${fileCount}${item.lastModified ? `, most recent activity ${new Date(item.lastModified).toLocaleDateString()}` : ''}`;
   }
   const ageText = item.lastModified ? formatAge(Math.max(0, Math.floor((Date.now() - new Date(item.lastModified).getTime()) / 86400000))) : '';
-  return `${item.label} — ${formatBytes(item.sizeBytes)} — ${tierLabel(item.tier ?? CandidateTier.Active)}${ageText ? ` — modified ${ageText} ago` : ''}`;
+  // item.sizeBytes is file + version history combined whenever versionSizeBytes
+  // is present (see ExplorerView's treemapItems) — split it back out for display.
+  const sizeText = item.versionSizeBytes != null
+    ? `${formatBytes(item.sizeBytes)} (${formatBytes(item.sizeBytes - item.versionSizeBytes)} file + ${formatBytes(item.versionSizeBytes)} version history)`
+    : formatBytes(item.sizeBytes);
+  return `${item.label} — ${sizeText} — ${tierLabel(item.tier ?? CandidateTier.Active)}${ageText ? ` — modified ${ageText} ago` : ''}`;
 }
 
 export interface TreemapProps {
@@ -47,13 +61,23 @@ export const Treemap: React.FC<TreemapProps> = ({ items, height = 420, onFolderC
   }, []);
 
   const rects = React.useMemo(() => layoutTreemap(items, width, height), [items, width, height]);
+  // The container's width is only known after its first ResizeObserver/
+  // clientWidth measurement — until then layoutTreemap has nothing to size
+  // against and returns no rects, which otherwise renders as a blank box
+  // indistinguishable from "this folder is empty" for that one frame.
+  const measuring = width <= 0 && items.length > 0;
 
   return (
     <div ref={containerRef} style={{ position: 'relative', width: '100%', height: `${height}px`, background: tokens.colorNeutralBackground2 }}>
+      {measuring && (
+        <div style={{ position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+          <Spinner size="small" label="Rendering treemap…" />
+        </div>
+      )}
       {rects.map((r) => {
         const clickable = r.kind === 'folder';
         const showLabel = r.width > 44 && r.height > 20;
-        const showDetail = showLabel && r.kind === 'folder' && r.height > 36;
+        const showDetail = showLabel && r.height > 36 && (r.kind === 'folder' || r.versionSizeBytes != null);
         const cell = (
           <div
             key={r.id}
@@ -111,7 +135,9 @@ export const Treemap: React.FC<TreemapProps> = ({ items, height = 420, onFolderC
                   opacity: 0.85,
                 }}
               >
-                {formatBytes(r.sizeBytes)}{r.itemCount != null ? ` · ${r.itemCount} file${r.itemCount === 1 ? '' : 's'}` : ''}
+                {r.kind === 'folder'
+                  ? (r.sizeUnknown ? 'Size unknown' : `${formatBytes(r.sizeBytes)}${r.itemCount != null ? ` · ${r.itemCount} file${r.itemCount === 1 ? '' : 's'}` : ''}`)
+                  : `${formatBytes(r.sizeBytes - (r.versionSizeBytes ?? 0))} + ${formatBytes(r.versionSizeBytes ?? 0)} history`}
               </Text>
             )}
           </div>

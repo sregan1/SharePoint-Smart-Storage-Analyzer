@@ -10,6 +10,7 @@ import {
   MessageBar,
   MessageBarBody,
   Divider,
+  Tooltip,
   makeStyles,
   tokens,
 } from '@fluentui/react-components';
@@ -19,6 +20,7 @@ import {
   History24Regular,
   Delete24Regular,
   Document24Regular,
+  Info16Regular,
 } from '@fluentui/react-icons';
 
 import { StorageAnalyzerService } from '../services/StorageAnalyzerService';
@@ -109,6 +111,7 @@ export const StorageReportView: React.FC<StorageReportViewProps> = ({
 
   const [subsites, setSubsites] = React.useState(includeSubsites);
   const [hidden, setHidden] = React.useState(includeHidden);
+  const [includeVersions, setIncludeVersions] = React.useState(false);
   const [scanning, setScanning] = React.useState(false);
   const [cancelRequested, setCancelRequested] = React.useState(false);
   const [canceledNotice, setCanceledNotice] = React.useState(false);
@@ -119,6 +122,7 @@ export const StorageReportView: React.FC<StorageReportViewProps> = ({
   const [error, setError] = React.useState('');
   const [warning, setWarning] = React.useState('');
   const [staleOnly, setStaleOnly] = React.useState(false);
+  const [showSkippedDetails, setShowSkippedDetails] = React.useState(false);
 
   // The report currently on screen, when it was loaded from history rather
   // than just produced by a live scan — null means "the results below are
@@ -153,6 +157,7 @@ export const StorageReportView: React.FC<StorageReportViewProps> = ({
     setViewedReport(null);
     setEntries([]);
     setSummary(null);
+    setShowSkippedDetails(false);
     setElapsed(0);
     scannedRef.current = 0;
     setProgress({ message: 'Starting scan…', scanned: 0, libsDone: 0, libsTotal: 0 });
@@ -170,6 +175,7 @@ export const StorageReportView: React.FC<StorageReportViewProps> = ({
         {
           siteUrl, includeSubsites: subsites, includeHidden: hidden, staleDays, veryStaleDays,
           scanConcurrency: sp.scanConcurrency, signal: abortController.signal,
+          includeVersionHistory: includeVersions,
         },
         (p) => { scannedRef.current = p.scanned; setProgress(p); },
         () => { scannedRef.current++; },
@@ -189,7 +195,7 @@ export const StorageReportView: React.FC<StorageReportViewProps> = ({
           id: `${Date.now()}`,
           timestamp: Date.now(),
           siteUrl,
-          options: { includeSubsites: subsites, staleDays, veryStaleDays },
+          options: { includeSubsites: subsites, staleDays, veryStaleDays, includeVersionHistory: includeVersions },
           summary: result.summary,
           entries: truncate ? result.entries.filter((e) => e.tier !== CandidateTier.Active) : result.entries,
           entriesTruncated: truncate,
@@ -240,6 +246,13 @@ export const StorageReportView: React.FC<StorageReportViewProps> = ({
     }
   };
 
+  // A report loaded from history shows/hides the version column based on how
+  // THAT scan was run, independent of the current (possibly different)
+  // checkbox state — mirrors effectiveStaleDays/effectiveVeryStaleDays below.
+  const effectiveVersionHistoryIncluded = viewedReport
+    ? !!viewedReport.options.includeVersionHistory
+    : includeVersions;
+
   const columns: StorageTableColumn<FileEntry>[] = [
     { key: 'library', header: 'Library', sortValue: (e) => e.libraryTitle, render: (e) => <span>{e.libraryTitle}</span> },
     {
@@ -254,6 +267,13 @@ export const StorageReportView: React.FC<StorageReportViewProps> = ({
       ),
     },
     { key: 'size', header: 'Size', align: 'right', sortValue: (e) => e.sizeBytes, render: (e) => <span>{formatBytes(e.sizeBytes)}</span> },
+    ...(effectiveVersionHistoryIncluded ? [{
+      key: 'versionSize',
+      header: 'Version history',
+      align: 'right' as const,
+      sortValue: (e: FileEntry) => e.versionSizeBytes ?? -1,
+      render: (e: FileEntry) => <span>{e.versionSizeBytes !== undefined ? formatBytes(e.versionSizeBytes) : '—'}</span>,
+    }] : []),
     {
       key: 'modified',
       header: 'Modified',
@@ -323,6 +343,7 @@ export const StorageReportView: React.FC<StorageReportViewProps> = ({
     setError('');
     setWarning('');
     setCanceledNotice(false);
+    setShowSkippedDetails(false);
   };
 
   return (
@@ -347,13 +368,62 @@ export const StorageReportView: React.FC<StorageReportViewProps> = ({
           <MessageBarBody>
             {canceledNotice && 'Scan canceled — showing partial results collected before cancellation. '}
             {partialWarnings.length > 0 && `Results are partial: ${partialWarnings.join('; ')}.`}
+            {!!summary?.skippedFolderDetails?.length && (
+              <>
+                {' '}
+                <Button
+                  appearance="transparent"
+                  size="small"
+                  onClick={() => setShowSkippedDetails((v) => !v)}
+                  style={{ padding: 0, minWidth: 'unset', height: 'auto', verticalAlign: 'baseline' }}
+                >
+                  {showSkippedDetails ? 'Hide details' : 'Show details'}
+                </Button>
+              </>
+            )}
           </MessageBarBody>
         </MessageBar>
+      )}
+
+      {showSkippedDetails && !!summary?.skippedFolderDetails?.length && (
+        <div className={styles.statTile} style={{ marginBottom: tokens.spacingVerticalM }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: tokens.spacingVerticalXS }}>
+            <Text weight="semibold">
+              Skipped folders{(summary.skippedFolders ?? 0) > summary.skippedFolderDetails.length
+                ? ` (showing first ${summary.skippedFolderDetails.length} of ${summary.skippedFolders})`
+                : ''}
+            </Text>
+            <Button
+              size="small"
+              appearance="secondary"
+              onClick={() => {
+                const text = summary.skippedFolderDetails!.map((d) => `${d.url}\t${d.error}`).join('\n');
+                navigator.clipboard?.writeText(text).catch(() => { /* clipboard unavailable — ignore */ });
+              }}
+            >
+              Copy to clipboard
+            </Button>
+          </div>
+          <div style={{ maxHeight: '240px', overflowY: 'auto', fontSize: tokens.fontSizeBase200 }}>
+            {summary.skippedFolderDetails.map((d, i) => (
+              <div key={`${d.url}-${i}`} style={{ padding: `${tokens.spacingVerticalXS} 0`, borderBottom: `1px solid ${tokens.colorNeutralStroke2}` }}>
+                <Text style={{ display: 'block', fontFamily: 'monospace' }} title={d.url}>{d.url}</Text>
+                <Text style={{ display: 'block', color: tokens.colorNeutralForeground3 }}>{d.error}</Text>
+              </div>
+            ))}
+          </div>
+        </div>
       )}
 
       <div className={styles.row}>
         <Checkbox label="Include subsites" checked={subsites} onChange={(_, d) => setSubsites(!!d.checked)} disabled={scanning} />
         <Checkbox label="Include hidden/system libraries" checked={hidden} onChange={(_, d) => setHidden(!!d.checked)} disabled={scanning} />
+        <Checkbox
+          label="Include version history size (slower)"
+          checked={includeVersions}
+          onChange={(_, d) => setIncludeVersions(!!d.checked)}
+          disabled={scanning}
+        />
         <Button appearance="primary" onClick={handleScan} disabled={scanning}>
           {scanning ? 'Scanning…' : 'Run scan'}
         </Button>
@@ -363,6 +433,11 @@ export const StorageReportView: React.FC<StorageReportViewProps> = ({
           </Button>
         )}
       </div>
+      {includeVersions && (
+        <Text style={{ display: 'block', color: tokens.colorNeutralForeground3, fontSize: tokens.fontSizeBase200, marginTop: `-${tokens.spacingVerticalS}`, marginBottom: tokens.spacingVerticalM }}>
+          Version history requires an extra request per file and will significantly increase scan time.
+        </Text>
+      )}
 
       {scanning && progress && (
         <div style={{ marginBottom: tokens.spacingVerticalL }}>
@@ -384,7 +459,15 @@ export const StorageReportView: React.FC<StorageReportViewProps> = ({
 
           <div className={styles.summaryGrid}>
             <div className={styles.statTile}>
-              <Text style={{ fontSize: tokens.fontSizeBase200, color: tokens.colorNeutralForeground3 }}>Total size</Text>
+              <Text style={{ fontSize: tokens.fontSizeBase200, color: tokens.colorNeutralForeground3 }}>
+                Total size{' '}
+                <Tooltip
+                  content="Sum of every scanned file's current content only — not an estimate, and never includes version history, whether or not that option was enabled for this scan. See Version history size (when shown) for that additional storage."
+                  relationship="label"
+                >
+                  <Info16Regular style={{ verticalAlign: 'middle', cursor: 'help' }} />
+                </Tooltip>
+              </Text>
               <Text weight="semibold" style={{ display: 'block', fontSize: tokens.fontSizeBase500 }}>{formatBytes(summary.totalSizeBytes)}</Text>
             </div>
             <div className={styles.statTile}>
@@ -399,6 +482,20 @@ export const StorageReportView: React.FC<StorageReportViewProps> = ({
               <Text style={{ fontSize: tokens.fontSizeBase200, color: tokens.colorNeutralForeground3 }}>Very stale ({formatBytes(summary.veryStaleSizeBytes)})</Text>
               <Text weight="semibold" style={{ display: 'block', fontSize: tokens.fontSizeBase500 }}>{summary.veryStaleCount}</Text>
             </div>
+            {summary.versionHistoryIncluded && (
+              <div className={styles.statTile}>
+                <Text style={{ fontSize: tokens.fontSizeBase200, color: tokens.colorNeutralForeground3 }}>
+                  Version history size{' '}
+                  <Tooltip
+                    content="Storage used by older, retained versions of files (SharePoint's version history), on top of the current file content already counted in Total size. This is additional storage consumed in the library."
+                    relationship="label"
+                  >
+                    <Info16Regular style={{ verticalAlign: 'middle', cursor: 'help' }} />
+                  </Tooltip>
+                </Text>
+                <Text weight="semibold" style={{ display: 'block', fontSize: tokens.fontSizeBase500 }}>{formatBytes(summary.totalVersionSizeBytes ?? 0)}</Text>
+              </div>
+            )}
           </div>
 
           <div className={styles.row}>
@@ -448,6 +545,9 @@ export const StorageReportView: React.FC<StorageReportViewProps> = ({
               <Badge appearance="tint" title={h.siteUrl}>{siteLabel(h.siteUrl)}</Badge>
               <Badge appearance="tint">{formatBytes(h.summary.totalSizeBytes)}</Badge>
               <Badge appearance="tint" color="warning">{h.summary.staleCount + h.summary.veryStaleCount} stale</Badge>
+              {h.summary.versionHistoryIncluded && (
+                <Badge appearance="tint" title="Version history size">{formatBytes(h.summary.totalVersionSizeBytes ?? 0)} versions</Badge>
+              )}
               {h.entriesTruncated && (
                 <Badge appearance="tint" color="informative" title="Report exceeded the row limit — only stale/very-stale files were saved">
                   Partial

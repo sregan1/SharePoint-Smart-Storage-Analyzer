@@ -50,8 +50,12 @@ export class StorageAnalyzerService {
     return storageMetrics.getFolderChildren(this.client, siteUrl, parentServerRelativeUrl, onProgress);
   }
 
-  getFolderFiles(siteUrl: string, serverRelativeUrl: string): ReturnType<typeof storageMetrics.getFolderFiles> {
-    return storageMetrics.getFolderFiles(this.client, siteUrl, serverRelativeUrl);
+  getFolderFiles(
+    siteUrl: string,
+    serverRelativeUrl: string,
+    includeVersionHistory?: boolean,
+  ): ReturnType<typeof storageMetrics.getFolderFiles> {
+    return storageMetrics.getFolderFiles(this.client, siteUrl, serverRelativeUrl, includeVersionHistory);
   }
 
   // ── Storage Report (full recursive scan) ──────────────────────────────────

@@ -4,6 +4,57 @@ All notable changes to this project are documented here.
 
 ---
 
+## [1.2.0] — 2026-07-30
+
+### Added
+
+- **Version history size in the Explorer Treemap**
+  The existing "Include version history size" toggle (previously List View
+  only) now also applies to the Treemap: file squares are sized by file +
+  version history combined, so a file with a lot of retained version history
+  visibly stands out. Hovering a cell (or its on-screen label, for large
+  enough squares) breaks the total back down, e.g. "24.6 MB (18.2 MB file +
+  6.4 MB version history)". The toggle itself moved to a shared location
+  above both views instead of living only in the List View.
+
+- **Clarified that folder totals never include version history**
+  An info tooltip next to the version-history toggle, and a similarly-styled
+  one next to Storage Report's "Total size" tile, spell out that both
+  figures are exact sums of current file content only — SharePoint has no
+  recursive version-history rollup, so a folder or site total never includes
+  it regardless of whether the toggle is on. Version history size is always
+  a separate, additive number.
+
+- **Processing indicator while the Treemap measures its container**
+  A brief spinner now covers the Treemap during the one-frame window before
+  its container has been measured, instead of that window rendering as a
+  blank box that could look identical to "this folder is empty."
+
+- **GitHub Actions release workflow**
+  Pushing a `vX.Y.Z` tag now builds the `.sppkg` and publishes it to the
+  repo's Releases page automatically (`.github/workflows/release.yml`) —
+  tagging a version is now sufficient to produce a release artifact, with no
+  separate manual build/upload step.
+
+### Fixed
+
+- **A folder whose files failed to load could misreport as empty**
+  The Explorer's per-folder file fetch silently treated any failure
+  (throttling, a transient error) as "this folder has no files," which could
+  contradict the folder's own size/file-count shown one level up. It now
+  surfaces the same kind of error banner the folder-listing fetch already
+  used for this exact failure mode.
+
+### Removed
+
+- **"Estimate" size badge references in the docs**
+  README and USER-GUIDE described a visible "Estimate" badge for when
+  SharePoint's Storage Metrics rollup is unavailable; the underlying
+  fallback estimate still exists and is used automatically, but no such
+  badge is rendered anywhere in the UI. The docs no longer claim otherwise.
+
+---
+
 ## [1.1.0] — 2026-07-11
 
 ### Added

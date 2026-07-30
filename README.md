@@ -24,7 +24,8 @@ Opens directly into a WizTree-style treemap of the site's default document libra
 | **Library switcher** | A button row switches between every document library on the site without leaving the view |
 | **Breadcrumb navigation** | Jump back to any ancestor folder in one click |
 | **List View** | Toggle to a sortable table of the same folder's contents — folders and files together, largest first by default |
-| **Excel / CSV export** | Export the current List View (name, size, item count, modified date, archival status) to `.xlsx` or `.csv` |
+| **Version history size** | Optional per-folder toggle that adds each file's retained-version storage on top of its current size — sized into the Treemap's file squares and shown as its own column in the List View. Folder totals never include it (no recursive rollup exists for it) |
+| **Excel / CSV export** | Export the current List View (name, size, item count, modified date, archival status, version-history size if enabled) to `.xlsx` or `.csv` |
 | **Archival status** | Files are tagged Active / Stale / Very stale based on configurable last-modified thresholds, shown in both the treemap and the list |
 
 Both view modes share the same drill-down state — switching from Treemap to List (or vice versa) keeps you in the same folder.
@@ -41,12 +42,15 @@ Scan a site — and optionally its subsites — and export a report of archival 
 |---|---|
 | **Configurable scope** | Include subsites and hidden/system libraries in the scan |
 | **Concurrent, throttling-aware scan** | Adjustable request concurrency with a live progress bar, file count, and elapsed timer |
+| **Cancelable scans** | Stop a running scan and still see the partial results collected so far (not saved to history) |
+| **Version history size** | Optional toggle that adds a per-file version-history column and a summary tile for the total across the scan — additive to Total size, not included in it |
+| **Partial-scan reporting** | Folders/subsites that fail to read (permissions, throttling) are called out with a warning, expandable per-item error details, and a copy-to-clipboard action, instead of silently under-reporting |
 | **Archival tiering** | Every file is classified Active, Stale, or Very stale based on configurable last-modified thresholds |
 | **In-browser results table** | Sortable results with a toggle to show only archival candidates |
 | **Excel export** | Color-coded `.xlsx` workbook with a Summary sheet and a full file-level Details sheet |
 | **CSV export** | Plain-text alternative for scripted processing |
-| **Scan history** | Past scans persist in IndexedDB, browsable without re-scanning |
-| **Report compare** | Diff two saved scans to see size change, new archival candidates, and resolved items over time |
+| **Scan history** | Past scans persist in IndexedDB (10 most recent), with cross-site visibility toggle and an automatic "Partial" badge for oversized reports where only stale-tier rows were retained |
+| **Report compare** | Diff two saved scans to see size change, new archival candidates, and resolved items over time — with a warning if the two scans are from different sites |
 
 ---
 
@@ -93,6 +97,8 @@ npm run ship
 ```
 
 The package is written to `sharepoint/solution/smart-storage-analyzer.sppkg`.
+
+Pushing a `vX.Y.Z` tag also triggers a GitHub Actions workflow (`.github/workflows/release.yml`) that builds this same package and publishes it to the repo's [Releases](../../releases) page automatically.
 
 **Deploy to SharePoint:**
 
@@ -183,9 +189,9 @@ config/
 
 **"npm install fails" or build errors about Node version** — This project requires Node 18.x exactly (`>=18.17.1 <19.0.0`). Run `node --version` to confirm. Use `nvm` or `nvm-windows` to switch versions.
 
-**"A library's size shows as an Estimate"** — SharePoint's Storage Metrics rollup is not available for that library (common right after content changes, before the rollup recalculates). The tool falls back to an on-the-fly estimate and badges it as such.
+**"The Storage Report scan takes a very long time"** — Scan time scales with file count and, if enabled, the number of subsites or version-history lookups. Narrow the scope in Settings (disable subsites, hidden libraries, or version history) or lower scan concurrency if you're seeing throttling (HTTP 429) errors.
 
-**"The Storage Report scan takes a very long time"** — Scan time scales with file count and, if enabled, the number of subsites. Narrow the scope in Settings (disable subsites or hidden libraries) or lower scan concurrency if you're seeing throttling (HTTP 429) errors.
+**"An error mentions HTTP 406"** — SharePoint rejected one specific request, almost always because a folder/file name has a character its REST API dislikes (trailing space/period, certain Unicode, a name starting with `~`) or sits at the end of an unusually long path. `getJson` (`services/sp/spCore.ts`) retries a 406 once automatically before surfacing it; if it persists, the offending item is usually identifiable from the URL now included in the thrown error.
 
 ---
 

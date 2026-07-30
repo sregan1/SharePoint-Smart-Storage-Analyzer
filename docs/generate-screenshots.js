@@ -125,9 +125,13 @@ function explorerTreemapPage() {
     <div style="display:flex;align-items:center;gap:2px;margin-bottom:12px;font-size:13px;color:${BRAND};">
       <span style="font-weight:600;">Documents</span>
     </div>
-    <div style="display:flex;gap:0;border-bottom:2px solid ${BRAND};width:fit-content;margin-bottom:4px;">
+    <div style="display:flex;gap:0;border-bottom:2px solid ${BRAND};width:fit-content;margin-bottom:12px;">
       <div style="padding:8px 16px;font-size:13px;font-weight:600;color:${BRAND};border-bottom:2px solid ${BRAND};margin-bottom:-2px;">Treemap</div>
       <div style="padding:8px 16px;font-size:13px;color:${NEUTRAL.text2};">List</div>
+    </div>
+    <div style="display:flex;align-items:center;gap:6px;margin-bottom:4px;">
+      <span class="checkbox"><span class="box"></span>Include version history size (slower)</span>
+      ${icon(INFO_SVG, 14, NEUTRAL.text3)}
     </div>
     ${tierLegend(true)}
     <div style="position:relative;width:100%;height:420px;background:${NEUTRAL.tileBg};">
@@ -167,9 +171,13 @@ function explorerListPage() {
     <div style="display:flex;align-items:center;gap:2px;margin-bottom:12px;font-size:13px;">
       <span style="font-weight:600;color:${BRAND};">Documents</span>
     </div>
-    <div style="display:flex;gap:0;border-bottom:1px solid ${NEUTRAL.border};width:fit-content;margin-bottom:16px;">
+    <div style="display:flex;gap:0;border-bottom:1px solid ${NEUTRAL.border};width:fit-content;margin-bottom:12px;">
       <div style="padding:8px 16px;font-size:13px;color:${NEUTRAL.text2};">Treemap</div>
       <div style="padding:8px 16px;font-size:13px;font-weight:600;color:${BRAND};border-bottom:2px solid ${BRAND};margin-bottom:-1px;">List</div>
+    </div>
+    <div style="display:flex;align-items:center;gap:6px;margin-bottom:12px;">
+      <span class="checkbox"><span class="box"></span>Include version history size (slower)</span>
+      ${icon(INFO_SVG, 14, NEUTRAL.text3)}
     </div>
     <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;margin-bottom:8px;">
       ${tierLegend(false)}
@@ -195,6 +203,7 @@ function reportConfigPage() {
     <div style="display:flex;align-items:center;gap:16px;flex-wrap:wrap;">
       <span class="checkbox"><span class="box"></span>Include subsites</span>
       <span class="checkbox"><span class="box"></span>Include hidden/system libraries</span>
+      <span class="checkbox"><span class="box"></span>Include version history size (slower)</span>
       <button class="btn primary">Run scan</button>
     </div>`;
   return pageShell(body, { tab: 'report', maxWidth: '1100px' });
@@ -210,7 +219,9 @@ function reportRunningPage() {
     <div style="display:flex;align-items:center;gap:16px;flex-wrap:wrap;margin-bottom:24px;">
       <span class="checkbox"><span class="box checked"></span>Include subsites</span>
       <span class="checkbox"><span class="box"></span>Include hidden/system libraries</span>
+      <span class="checkbox"><span class="box"></span>Include version history size (slower)</span>
       <button class="btn primary" style="opacity:0.6;">Scanning…</button>
+      <button class="btn">Cancel</button>
     </div>
     <div style="margin-bottom:24px;">
       <div style="height:4px;background:#edebe9;border-radius:2px;overflow:hidden;width:100%;">
@@ -225,9 +236,9 @@ function reportRunningPage() {
 
 // ── 5. Storage Report — results ──────────────────────────────────────────────
 function reportResultsPage() {
-  const tile = (label, value) => `
+  const tile = (label, value, withInfo) => `
     <div style="background:${NEUTRAL.tileBg};border-radius:4px;padding:14px 16px;">
-      <div style="font-size:12px;color:${NEUTRAL.text2};">${label}</div>
+      <div style="font-size:12px;color:${NEUTRAL.text2};display:flex;align-items:center;gap:5px;">${label}${withInfo ? icon(INFO_SVG, 13, NEUTRAL.text3) : ''}</div>
       <div style="font-size:22px;font-weight:600;margin-top:2px;">${value}</div>
     </div>`;
   const rows = [
@@ -257,10 +268,11 @@ function reportResultsPage() {
     <div style="display:flex;align-items:center;gap:16px;flex-wrap:wrap;margin-bottom:24px;">
       <span class="checkbox"><span class="box checked"></span>Include subsites</span>
       <span class="checkbox"><span class="box"></span>Include hidden/system libraries</span>
+      <span class="checkbox"><span class="box"></span>Include version history size (slower)</span>
       <button class="btn primary">Run scan</button>
     </div>
     <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:16px;margin-bottom:24px;">
-      ${tile('Total size', '18.6 GB')}
+      ${tile('Total size', '18.6 GB', true)}
       ${tile('Files scanned', '8,412')}
       ${tile('Stale (2.1 GB)', '412')}
       ${tile('Very stale (4.3 GB)', '96')}
@@ -281,16 +293,18 @@ function reportResultsPage() {
 // ── 6. Storage Report — scan history & compare ───────────────────────────────
 function reportHistoryPage() {
   const scans = [
-    { date: '7/1/2026, 9:14 AM', size: '18.6 GB', stale: 508, checked: true },
-    { date: '6/3/2026, 9:02 AM', size: '17.1 GB', stale: 447, checked: true },
-    { date: '5/1/2026, 8:55 AM', size: '15.9 GB', stale: 402, checked: false },
+    { date: '7/1/2026, 9:14 AM', size: '18.6 GB', stale: 508, checked: true, partial: false },
+    { date: '6/3/2026, 9:02 AM', size: '17.1 GB', stale: 447, checked: true, partial: true },
+    { date: '5/1/2026, 8:55 AM', size: '15.9 GB', stale: 402, checked: false, partial: false },
   ];
+  const partialBadge = `<span style="background:#fde7e9;color:#a4262c;font-size:11.5px;font-weight:600;padding:2px 8px;border-radius:10px;">Partial</span>`;
   const rowsHtml = scans.map((s) => `
     <div style="display:flex;align-items:center;gap:10px;padding:6px 0;">
       <span class="checkbox"><span class="box${s.checked ? ' checked' : ''}"></span></span>
       <span style="min-width:160px;font-size:13px;">${s.date}</span>
       <span style="background:#e8f2fc;color:${BRAND};font-size:11.5px;font-weight:600;padding:2px 8px;border-radius:10px;">${s.size}</span>
       <span style="background:#fdf1e0;color:#8a6100;font-size:11.5px;font-weight:600;padding:2px 8px;border-radius:10px;">${s.stale} stale</span>
+      ${s.partial ? partialBadge : ''}
       <button class="btn" style="padding:4px 10px;font-size:12px;">View</button>
       <span style="margin-left:auto;">${icon(DELETE_SVG, 16, NEUTRAL.text3)}</span>
     </div>`).join('');
@@ -305,7 +319,8 @@ function reportHistoryPage() {
       ${icon(HISTORY_SVG, 16, NEUTRAL.text1)}
       <span style="font-weight:600;font-size:14px;">Scan history</span>
     </div>
-    <div style="font-size:12px;color:${NEUTRAL.text2};margin-bottom:12px;">Select two scans to compare growth in stale storage over time.</div>
+    <div style="font-size:12px;color:${NEUTRAL.text2};margin-bottom:8px;">Select two scans to compare growth in stale storage over time.</div>
+    <span class="checkbox" style="margin-bottom:12px;display:inline-flex;"><span class="box"></span>Show reports from other sites (2 hidden)</span>
     ${rowsHtml}
     <div style="background:${NEUTRAL.tileBg};border-radius:4px;padding:14px 16px;margin-top:16px;max-width:420px;">
       <div style="font-weight:600;font-size:13px;margin-bottom:8px;">Comparison</div>

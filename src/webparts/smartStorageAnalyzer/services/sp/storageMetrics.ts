@@ -1,11 +1,34 @@
-import { SpApiClient, folderApi, SYSTEM_FOLDER_NAMES, TaskQueue } from './spCore';
+import { SpApiClient, folderApi, odata, SYSTEM_FOLDER_NAMES, TaskQueue } from './spCore';
 import { FolderStorageNode } from '../../models/models';
 import { getCachedFolderChildren, setCachedFolderChildren } from './folderSizeCache';
+
+// Sums SP.FileVersion.Size across a file's retained old versions — same
+// shape as fileWalk.ts's fetchVersionSizeBytes, kept local here since
+// ExplorerView only ever needs it for one folder's immediate files at a
+// time (no shared walk-level queue to plug into).
+async function fetchVersionSizeBytes(
+  client: SpApiClient,
+  siteUrl: string,
+  fileServerRelativeUrl: string,
+): Promise<number> {
+  const url = `${siteUrl}/_api/web/GetFileByServerRelativePath(decodedUrl='${encodeURIComponent(
+    odata(fileServerRelativeUrl),
+  )}')/Versions?$select=Size`;
+  const versions = await client.getJsonPaged(url);
+  return versions.reduce((sum, v) => sum + Number(v.Size ?? 0), 0);
+}
 
 interface RawMetrics {
   totalSizeBytes: number;
   fileCount: number;
   lastModified?: string;
+  // Set when a live walk (getShallowEstimate) couldn't fully resolve this
+  // folder's own subtree (throttling exhausted, a transient error, a
+  // permissions issue) — the totals above are then whatever partial amount
+  // it had when it gave up, not a confirmed result. Never set for a
+  // StorageMetrics-sourced result (that path either succeeds or is treated
+  // as unavailable, with no partial/uncertain state).
+  errored?: boolean;
 }
 
 // GetFolderByServerRelativePath(...)/StorageMetrics is the classic, still-
@@ -138,7 +161,10 @@ function finishNode(siteUrl: string, node: WalkNode, onRootDone: (acc: RawMetric
 
   const parent = node.parent;
   if (!parent) {
-    onRootDone(node.acc);
+    // node.errored lives on the WalkNode, not the RawMetrics acc handed back
+    // to the caller — fold it in here so getShallowEstimate's caller can
+    // tell "genuinely empty" apart from "the walk gave up partway through."
+    onRootDone({ ...node.acc, errored: node.errored });
     return;
   }
   parent.acc.totalSizeBytes += node.acc.totalSizeBytes;
@@ -245,11 +271,22 @@ export async function getFolderChildren(
     // truly empty folders that walk is only a couple of cheap requests.
     const useMetrics = !!metrics && metrics.totalSizeBytes > 0;
     const resolved = useMetrics ? metrics! : await getShallowEstimate(client, siteUrl, f.ServerRelativeUrl, fallbackQueue);
-    if (!useMetrics && resolved.totalSizeBytes === 0 && resolved.fileCount === 0) {
+    // resolved.errored means the live walk gave up partway through (throttling
+    // exhausted, a transient error) — its totals are whatever partial amount
+    // it had at that point, NOT a confirmed result, and must be presented as
+    // such rather than silently rendered as a genuinely empty folder.
+    const sizeUnknown = !useMetrics && !!resolved.errored;
+    if (!useMetrics && !sizeUnknown && resolved.totalSizeBytes === 0 && resolved.fileCount === 0) {
       // eslint-disable-next-line no-console
       console.debug(
         `[SmartStorageAnalyzer] ${f.ServerRelativeUrl}: StorageMetrics ${metrics ? 'reported 0 bytes' : 'unavailable'}` +
         ' and live walk found no files — treating as empty.',
+      );
+    } else if (sizeUnknown) {
+      // eslint-disable-next-line no-console
+      console.warn(
+        `[SmartStorageAnalyzer] ${f.ServerRelativeUrl}: could not determine size (throttled or an error occurred) — ` +
+        'showing as unknown rather than empty.',
       );
     }
     const node: FolderStorageNode = {
@@ -258,7 +295,7 @@ export async function getFolderChildren(
       totalSizeBytes: resolved.totalSizeBytes,
       fileCount: resolved.fileCount,
       lastModified: resolved.lastModified ?? f.TimeLastModified,
-      sizeSource: useMetrics ? 'storageMetrics' : 'estimate', // 'estimate' here is a live walk, still exact for readable subtrees
+      sizeSource: useMetrics ? 'storageMetrics' : (sizeUnknown ? 'error' : 'estimate'), // 'estimate' here is a live walk, still exact for readable subtrees
       children: [],
       hasChildren: true, // resolved lazily on next expand; harmless if it turns out empty
     };
@@ -267,20 +304,24 @@ export async function getFolderChildren(
     return node;
   });
 
-  // The StorageMetrics probe above is a single, fixed-size batch — exactly
-  // one lightweight call per immediate folder, however many that is — unlike
-  // the fallback walk, which can fan out into arbitrarily many requests as
-  // it recurses into subfolders. That open-ended fan-out is what caused
-  // throttling before, so the walk stays capped at the user's configured
-  // concurrency; the fixed, bounded probe batch is safe to run faster. Scaled
-  // relative to the user's own setting (not a fixed floor) so someone who has
-  // deliberately turned concurrency down to avoid throttling on their tenant
-  // isn't overridden — capped at 10 so a high setting doesn't get doubled
-  // again on top of an already-generous value.
-  const probeConcurrency = Math.min(client.scanConcurrency * 2, 10);
-  const results = await client.runConcurrent(tasks, probeConcurrency);
+  // No longer doubled. This used to run at min(scanConcurrency * 2, 10) on the
+  // reasoning that the probe batch is fixed-size and therefore safe to run
+  // faster than the open-ended fallback walk. That held in isolation, but the
+  // probe pool and the fallback walks it spawns are alive at the SAME time, so
+  // the real peak was the sum (up to 10 + scanConcurrency) — on a large tenant,
+  // enough to sit in sustained throttling. SpApiClient now enforces one global
+  // in-flight ceiling across every pool and shrinks it while throttled, so
+  // asking for extra here buys nothing and only deepens the queue.
+  const results = await client.runConcurrent(tasks, client.scanConcurrency);
   const nodes = results.filter((n): n is FolderStorageNode => !!n).sort((a, b) => b.totalSizeBytes - a.totalSizeBytes);
-  setCachedFolderChildren(siteUrl, parentServerRelativeUrl, nodes);
+  // Same reasoning as the internal walk's own per-node cache guard: caching a
+  // batch containing an 'error' (uncertain-size) child would keep showing it
+  // as unknown for the cache's full TTL even once throttling has cleared up.
+  // Leaving the whole batch uncached costs one re-probe on the next visit —
+  // cheap next to that folder staying wrong for minutes.
+  if (!nodes.some((n) => n.sizeSource === 'error')) {
+    setCachedFolderChildren(siteUrl, parentServerRelativeUrl, nodes);
+  }
   return nodes;
 }
 
@@ -291,11 +332,12 @@ export async function getFolderFiles(
   client: SpApiClient,
   siteUrl: string,
   serverRelativeUrl: string,
-): Promise<{ name: string; serverRelativeUrl: string; sizeBytes: number; timeCreated: string; timeLastModified: string; authorLoginName?: string; authorDisplayName?: string }[]> {
+  includeVersionHistory = false,
+): Promise<{ name: string; serverRelativeUrl: string; sizeBytes: number; timeCreated: string; timeLastModified: string; authorLoginName?: string; authorDisplayName?: string; versionSizeBytes?: number }[]> {
   const files = await client.getJsonPaged(
     `${folderApi(siteUrl, serverRelativeUrl)}/Files?$select=Name,ServerRelativeUrl,Length,TimeCreated,TimeLastModified,Author/Title,Author/LoginName&$expand=Author&$top=5000`,
   );
-  return files.map((f: any) => ({
+  const rows = files.map((f: any) => ({
     name: f.Name,
     serverRelativeUrl: f.ServerRelativeUrl,
     sizeBytes: Number(f.Length ?? 0),
@@ -303,5 +345,24 @@ export async function getFolderFiles(
     timeLastModified: f.TimeLastModified,
     authorLoginName: f.Author?.LoginName,
     authorDisplayName: f.Author?.Title,
+    versionSizeBytes: undefined as number | undefined,
   }));
+
+  if (includeVersionHistory && rows.length > 0) {
+    // Bounded to this one folder's (typically small) file list — no
+    // shared walk-level queue needed since callers only ever load one
+    // folder's immediate files at a time.
+    await client.runConcurrent(
+      rows.map((row) => async () => {
+        try {
+          row.versionSizeBytes = await fetchVersionSizeBytes(client, siteUrl, row.serverRelativeUrl);
+        } catch {
+          row.versionSizeBytes = undefined;
+        }
+      }),
+      Math.max(1, Math.floor(client.scanConcurrency / 2)),
+    );
+  }
+
+  return rows;
 }

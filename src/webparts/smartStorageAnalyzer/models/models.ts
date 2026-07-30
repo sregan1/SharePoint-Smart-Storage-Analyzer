@@ -15,6 +15,7 @@ export interface LibraryInfo {
   lastModified?: string;
   noCrawl?: boolean;
   baseTemplate: number;
+  versionSizeBytes?: number;
 }
 
 export interface FolderStorageNode {
@@ -23,10 +24,15 @@ export interface FolderStorageNode {
   totalSizeBytes: number;
   fileCount: number;
   lastModified?: string;
-  sizeSource: 'storageMetrics' | 'estimate';
+  // 'error' means the recursive fallback walk couldn't complete for this
+  // folder (throttling exhausted, a transient error, a permissions issue) —
+  // totalSizeBytes/fileCount are whatever partial total it had when it gave
+  // up, usually 0, and must NOT be presented as a confirmed empty folder.
+  sizeSource: 'storageMetrics' | 'estimate' | 'error';
   children: FolderStorageNode[];
   hasChildren: boolean;
   isLoading?: boolean;
+  versionSizeBytes?: number;
 }
 
 export interface FileEntry {
@@ -40,6 +46,10 @@ export interface FileEntry {
   authorDisplayName?: string;
   ageDays: number;
   tier: CandidateTier;
+  // Sum of SP.FileVersion.Size across a file's retained old versions. Only
+  // populated when ScanOptions.includeVersionHistory is true (opt-in — an
+  // extra REST call per file). Undefined means "not measured", not zero.
+  versionSizeBytes?: number;
 }
 
 export interface ScanOptions {
@@ -50,6 +60,10 @@ export interface ScanOptions {
   staleDays: number;
   veryStaleDays: number;
   scanConcurrency: number;
+  // Opt-in: fetches each file's version history (SP.FileVersion.Size) and
+  // sums it separately from the current file size. Requires an extra REST
+  // call per file, so it roughly doubles request volume and scan time.
+  includeVersionHistory: boolean;
   // Cooperative cancellation only: checked between queued tasks/libraries/
   // sites, not passed into in-flight HTTP requests. A scan can be many
   // minutes long with no other way to stop it short of leaving the page.
@@ -78,13 +92,30 @@ export interface StorageReportSummary {
   // missing value as 0.
   skippedFolders?: number;
   skippedSites?: number;
+  // The actual failure behind each skipped folder (e.g. list view threshold,
+  // 403, throttling exhausted after retries) — capped at
+  // MAX_SKIPPED_DETAILS entries (see storageScan.ts) so a pathological scan
+  // with thousands of failures doesn't bloat the stored report; skippedFolders
+  // above is always the true, uncapped count.
+  skippedFolderDetails?: { url: string; error: string }[];
+  // Per-file version-history fetch failures (kept in-scope rather than
+  // aborting the scan) — see skippedFolders/skippedSites above.
+  skippedVersions?: number;
+  // Sum of FileEntry.versionSizeBytes across all entries. Only meaningful
+  // when versionHistoryIncluded is true — see that field's comment.
+  totalVersionSizeBytes?: number;
+  // Whether this particular scan collected version-history data. Needed
+  // because totalVersionSizeBytes === 0 is ambiguous between "no old
+  // versions exist" and "the toggle was off" (or this report predates the
+  // feature and the field is simply missing).
+  versionHistoryIncluded?: boolean;
 }
 
 export interface StoredReport {
   id: string;
   timestamp: number;
   siteUrl: string;
-  options: Pick<ScanOptions, 'includeSubsites' | 'staleDays' | 'veryStaleDays'>;
+  options: Pick<ScanOptions, 'includeSubsites' | 'staleDays' | 'veryStaleDays' | 'includeVersionHistory'>;
   summary: StorageReportSummary;
   entries: FileEntry[];
   // Set when `entries` holds only stale/very-stale rows because the full
@@ -116,6 +147,11 @@ export interface TreemapItem {
   lastModified?: string;
   count?: number; // populated only for the aggregated "Other" bucket
   itemCount?: number; // folders only — rolled-up file count (FolderStorageNode.fileCount)
+  versionSizeBytes?: number;
+  // Folders only — true when FolderStorageNode.sizeSource === 'error': the
+  // size/count shown is not a confirmed result, just whatever partial total
+  // a throttled/failed live walk had when it gave up.
+  sizeUnknown?: boolean;
 }
 
 export interface TreemapRect extends TreemapItem {
@@ -137,4 +173,6 @@ export interface FolderListRow {
   ageDays?: number;           // files only
   tier?: CandidateTier;       // files only
   authorDisplayName?: string; // files only
+  versionSizeBytes?: number;  // files only — folders show '—' (no recursive rollup)
+  sizeUnknown?: boolean;      // folders only — see TreemapItem.sizeUnknown
 }

@@ -9,6 +9,11 @@ export interface ScanResult {
   canceled: boolean;
 }
 
+// Caps how many skipped-folder error details get stored in the report
+// (IndexedDB history) — skippedFolders count itself stays uncapped/exact,
+// this only limits the detail list attached for display.
+const MAX_SKIPPED_DETAILS = 200;
+
 // Orchestrates a full Storage Report scan: resolves the site + (optionally)
 // every subsite beneath it, walks every document library on each, and
 // classifies every file. Libraries are processed one at a time — each
@@ -33,6 +38,8 @@ export async function scanSite(
   let libsTotal = 0;
   let skippedFolders = 0;
   let skippedSites = 0;
+  let skippedVersions = 0;
+  const skippedFolderDetails: { url: string; error: string }[] = [];
   const librariesPerSite: { siteUrl: string; libraries: Awaited<ReturnType<typeof getLibraries>> }[] = [];
 
   for (let i = 0; i < sites.length; i++) {
@@ -61,11 +68,17 @@ export async function scanSite(
     for (const library of libraries) {
       if (options.signal?.aborted) break;
       onProgress({ message: `Scanning ${library.title}…`, scanned: entries.length, libsDone, libsTotal });
-      const { skippedFolders: libSkipped } = await walkLibrary(client, siteUrl, library, options, (entry) => {
-        entries.push(entry);
-        onEntry?.(entry);
-      });
+      const { skippedFolders: libSkipped, skippedVersions: libSkippedVersions, skippedFolderDetails: libDetails } = await walkLibrary(
+        client, siteUrl, library, options, (entry) => {
+          entries.push(entry);
+          onEntry?.(entry);
+        },
+      );
       skippedFolders += libSkipped;
+      skippedVersions += libSkippedVersions;
+      if (skippedFolderDetails.length < MAX_SKIPPED_DETAILS) {
+        skippedFolderDetails.push(...libDetails.slice(0, MAX_SKIPPED_DETAILS - skippedFolderDetails.length));
+      }
       libsDone++;
       onProgress({ message: `Scanning ${library.title}…`, scanned: entries.length, libsDone, libsTotal });
     }
@@ -74,6 +87,7 @@ export async function scanSite(
   const summary: StorageReportSummary = entries.reduce(
     (acc, e) => {
       acc.totalSizeBytes += e.sizeBytes;
+      acc.totalVersionSizeBytes! += e.versionSizeBytes ?? 0;
       acc.totalFiles += 1;
       if (e.tier === CandidateTier.Stale) {
         acc.staleCount += 1;
@@ -94,11 +108,15 @@ export async function scanSite(
       durationSeconds: 0,
       skippedFolders: 0,
       skippedSites: 0,
+      totalVersionSizeBytes: 0,
     } as StorageReportSummary,
   );
   summary.durationSeconds = (Date.now() - start) / 1000;
   summary.skippedFolders = skippedFolders;
   summary.skippedSites = skippedSites;
+  summary.skippedVersions = skippedVersions;
+  summary.skippedFolderDetails = skippedFolderDetails;
+  summary.versionHistoryIncluded = options.includeVersionHistory;
 
   return { entries, summary, canceled: !!options.signal?.aborted };
 }
