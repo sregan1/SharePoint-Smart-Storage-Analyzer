@@ -36,6 +36,8 @@ const HISTORY_SVG = '<path d="M12 4a8 8 0 1 0 6.93 4H16.9a6 6 0 1 1-1.5-2.6l-1.9
 const DELETE_SVG = '<path d="M9.5 3a1 1 0 0 0-1 1v1H5a1 1 0 0 0 0 2h.5l.9 12.1A2 2 0 0 0 8.4 21h7.2a2 2 0 0 0 2-1.9L18.5 7H19a1 1 0 1 0 0-2h-3.5V4a1 1 0 0 0-1-1h-5Zm.5 6a.75.75 0 0 1 1.5 0v8a.75.75 0 0 1-1.5 0V9Zm4.5 0a.75.75 0 0 1 1.5 0v8a.75.75 0 0 1-1.5 0V9Z"/>';
 const INFO_SVG = '<path d="M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20Zm0 6.5a1 1 0 1 1 0 2 1 1 0 0 1 0-2ZM11 11h1.5a.5.5 0 0 1 .5.5V17h1a1 1 0 1 1 0 2h-3.5a1 1 0 1 1 0-2h1v-4h-.5a1 1 0 1 1 0-2Z"/>';
 const BACK_SVG = '<path d="M15.7 5.3a1 1 0 0 1 0 1.4L10.4 12l5.3 5.3a1 1 0 0 1-1.4 1.4l-6-6a1 1 0 0 1 0-1.4l6-6a1 1 0 0 1 1.4 0Z"/>';
+const REFRESH_SVG = '<path d="M12 4.5a7.5 7.5 0 0 0-6.87 4.5H7.5a.75.75 0 0 1 0 1.5H3.75A.75.75 0 0 1 3 9.75V6a.75.75 0 0 1 1.5 0v1.8A9 9 0 1 1 3 12a.75.75 0 0 1 1.5 0 7.5 7.5 0 1 0 7.5-7.5Z"/>';
+const OTHER_COLOR = '#8a8886';
 
 function icon(svg, size, color) {
   return `<svg width="${size}" height="${size}" viewBox="0 0 24 24" fill="${color}" style="flex-shrink:0;">${svg}</svg>`;
@@ -98,32 +100,34 @@ function tierLegend(showFolder) {
   </div>`;
 }
 
-// ── 1. Explorer — Treemap view ────────────────────────────────────────────────
+// ── 1. Explorer — Treemap view (site-wide library treemap, the opening view) ──
 function explorerTreemapPage() {
   const cells = [
-    { l: 0, t: 0, w: 44, h: 62, color: FOLDER_COLOR, name: 'Projects', sub: '4.2 GB · 1,204 files' },
-    { l: 44, t: 0, w: 26, h: 62, color: FOLDER_COLOR, name: 'Archive', sub: '2.8 GB · 890 files' },
-    { l: 70, t: 0, w: 30, h: 62, color: TIER.veryStale, name: 'Video-Raw-Footage.mp4', sub: '' },
-    { l: 0, t: 62, w: 22, h: 38, color: FOLDER_COLOR, name: 'Old Reports', sub: '1.1 GB · 210 files' },
-    { l: 22, t: 62, w: 18, h: 38, color: FOLDER_COLOR, name: 'Templates', sub: '340 MB · 156 files' },
-    { l: 40, t: 62, w: 15, h: 38, color: TIER.stale, name: 'Q4-Budget.xlsx', sub: '' },
-    { l: 55, t: 62, w: 22, h: 38, color: TIER.active, name: 'Brand-Guidelines.pdf', sub: '' },
-    { l: 77, t: 62, w: 23, h: 38, color: TIER.stale, name: 'Vendor-Contracts.zip', sub: '' },
+    { l: 0, t: 0, w: 52, h: 62, color: FOLDER_COLOR, name: 'Documents', sub: '18.6 GB · 8,412 files' },
+    { l: 52, t: 0, w: 30, h: 62, color: FOLDER_COLOR, name: 'Campaign Archive', sub: '6.1 GB · 2,340 files' },
+    { l: 82, t: 0, w: 18, h: 62, color: FOLDER_COLOR, name: 'Site Assets', sub: '2.2 GB · 640 files' },
+    { l: 0, t: 62, w: 24, h: 38, color: FOLDER_COLOR, name: 'Old Reports', sub: '1.1 GB · 210 files' },
+    { l: 24, t: 62, w: 16, h: 38, color: FOLDER_COLOR, name: 'Templates', sub: '340 MB · 156 files' },
+    { l: 40, t: 62, w: 20, h: 38, color: '#c77f00', name: 'Legal Hold', sub: 'Unknown', pattern: true },
+    { l: 60, t: 62, w: 18, h: 38, color: OTHER_COLOR, name: 'Other (3 libraries)', sub: '620 MB combined' },
   ];
   const cellsHtml = cells.map((c) => `
-    <div style="position:absolute;left:${c.l}%;top:${c.t}%;width:${c.w}%;height:${c.h}%;background:${c.color};border:1px solid ${NEUTRAL.bg};box-sizing:border-box;padding:5px 7px;overflow:hidden;">
+    <div style="position:absolute;left:${c.l}%;top:${c.t}%;width:${c.w}%;height:${c.h}%;background:${c.pattern ? 'repeating-linear-gradient(45deg,#a36200,#a36200 6px,#c77f00 6px,#c77f00 12px)' : c.color};border:1px solid ${NEUTRAL.bg};box-sizing:border-box;padding:5px 7px;overflow:hidden;">
       <div style="color:#fff;font-size:12px;font-weight:600;text-shadow:0 1px 2px rgba(0,0,0,0.5);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${c.name}</div>
       ${c.sub ? `<div style="color:#fff;font-size:10.5px;opacity:0.9;text-shadow:0 1px 2px rgba(0,0,0,0.5);margin-top:2px;">${c.sub}</div>` : ''}
     </div>`).join('');
 
   const body = `
-    <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:16px;">
-      <button class="btn primary">Documents</button>
-      <button class="btn">Site Assets</button>
-      <button class="btn">Campaign Archive</button>
+    <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;margin-bottom:16px;">
+      <div style="display:flex;gap:8px;flex-wrap:wrap;">
+        <button class="btn primary">Documents</button>
+        <button class="btn">Site Assets</button>
+        <button class="btn">Campaign Archive</button>
+      </div>
+      <button class="btn">${icon(REFRESH_SVG, 14, NEUTRAL.text1)} Refresh</button>
     </div>
     <div style="display:flex;align-items:center;gap:2px;margin-bottom:12px;font-size:13px;color:${BRAND};">
-      <span style="font-weight:600;">Documents</span>
+      <span style="font-weight:600;">All libraries</span>
     </div>
     <div style="display:flex;gap:0;border-bottom:2px solid ${BRAND};width:fit-content;margin-bottom:12px;">
       <div style="padding:8px 16px;font-size:13px;font-weight:600;color:${BRAND};border-bottom:2px solid ${BRAND};margin-bottom:-2px;">Treemap</div>
@@ -134,8 +138,12 @@ function explorerTreemapPage() {
       ${icon(INFO_SVG, 14, NEUTRAL.text3)}
     </div>
     ${tierLegend(true)}
-    <div style="position:relative;width:100%;height:420px;background:${NEUTRAL.tileBg};">
+    <div style="position:relative;width:100%;height:420px;background:${NEUTRAL.tileBg};margin-bottom:8px;">
       ${cellsHtml}
+    </div>
+    <div style="display:flex;align-items:center;gap:8px;font-size:12px;color:${NEUTRAL.text2};background:${NEUTRAL.tileBg};border-radius:4px;padding:8px 12px;">
+      <span>"Other (3 libraries)" folds the smallest items out of the treemap so the biggest stay easy to click — switch to List view to see them individually.</span>
+      <button class="btn" style="padding:3px 10px;font-size:12px;white-space:nowrap;">Switch to List view</button>
     </div>`;
   return pageShell(body, { tab: 'explorer' });
 }
@@ -143,30 +151,36 @@ function explorerTreemapPage() {
 // ── 2. Explorer — List view ──────────────────────────────────────────────────
 function explorerListPage() {
   const rows = [
-    { icon: 'folder', name: 'Projects', size: '4.2 GB', items: '1,204', mod: '7/1/2026', status: null },
-    { icon: 'folder', name: 'Archive', size: '2.8 GB', items: '890', mod: '6/2/2026', status: null },
-    { icon: 'doc', name: 'Video-Raw-Footage.mp4', size: '1.9 GB', items: '', mod: '3/14/2025', status: 'veryStale' },
-    { icon: 'folder', name: 'Old Reports', size: '1.1 GB', items: '210', mod: '1/9/2025', status: null },
-    { icon: 'folder', name: 'Templates', size: '340 MB', items: '156', mod: '6/28/2026', status: null },
-    { icon: 'doc', name: 'Vendor-Contracts.zip', size: '210 MB', items: '', mod: '9/2/2025', status: 'stale' },
-    { icon: 'doc', name: 'Q4-Budget.xlsx', size: '18 MB', items: '', mod: '11/20/2025', status: 'stale' },
-    { icon: 'doc', name: 'Brand-Guidelines.pdf', size: '9 MB', items: '', mod: '6/30/2026', status: 'active' },
+    { icon: 'folder', name: 'Projects', size: '4.2 GB', items: '1,204', vh: '', vc: '', mod: '7/1/2026', status: null },
+    { icon: 'folder', name: 'Archive', size: '2.8 GB', items: '890', vh: '', vc: '', mod: '6/2/2026', status: null },
+    { icon: 'doc', name: 'Video-Raw-Footage.mp4', size: '1.9 GB', items: '', vh: '210 MB', vc: '6', mod: '3/14/2025', status: 'veryStale' },
+    { icon: 'folder', name: 'Old Reports', size: '1.1 GB', items: '210', vh: '', vc: '', mod: '1/9/2025', status: null },
+    { icon: 'folder', name: 'Templates', size: '340 MB', items: '156', vh: '', vc: '', mod: '6/28/2026', status: null },
+    { icon: 'doc', name: 'Vendor-Contracts.zip', size: '210 MB', items: '', vh: '38 MB', vc: '3', mod: '9/2/2025', status: 'stale' },
+    { icon: 'doc', name: 'Q4-Budget.xlsx', size: '18 MB', items: '', vh: '54 MB', vc: '22', mod: '11/20/2025', status: 'stale' },
+    { icon: 'doc', name: 'Brand-Guidelines.pdf', size: '9 MB', items: '', vh: '4 MB', vc: '2', mod: '6/30/2026', status: 'active' },
   ];
   const statusDot = (s) => s ? `<span style="display:inline-flex;align-items:center;gap:5px;"><span style="width:8px;height:8px;border-radius:50%;background:${TIER[s]};display:inline-block;"></span>${s === 'veryStale' ? 'Very stale' : s === 'stale' ? 'Stale' : 'Active'}</span>` : '<span style="color:#c8c6c4;">—</span>';
+  const dash = (v) => v || '<span style="color:#c8c6c4;">—</span>';
   const rowsHtml = rows.map((r) => `
     <tr>
       <td><div style="display:flex;align-items:center;gap:6px;">${icon(r.icon === 'folder' ? FOLDER_SVG : DOC_SVG, 14, r.icon === 'folder' ? BRAND : NEUTRAL.text2)}<span>${r.name}</span></div></td>
       <td style="text-align:right;">${r.size}</td>
       <td style="text-align:right;">${r.items || ''}</td>
+      <td style="text-align:right;">${dash(r.vh)}</td>
+      <td style="text-align:right;">${dash(r.vc)}</td>
       <td>${r.mod}</td>
       <td>${statusDot(r.status)}</td>
     </tr>`).join('');
 
   const body = `
-    <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:16px;">
-      <button class="btn primary">Documents</button>
-      <button class="btn">Site Assets</button>
-      <button class="btn">Campaign Archive</button>
+    <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;margin-bottom:16px;">
+      <div style="display:flex;gap:8px;flex-wrap:wrap;">
+        <button class="btn primary">Documents</button>
+        <button class="btn">Site Assets</button>
+        <button class="btn">Campaign Archive</button>
+      </div>
+      <button class="btn">${icon(REFRESH_SVG, 14, NEUTRAL.text1)} Refresh</button>
     </div>
     <div style="display:flex;align-items:center;gap:2px;margin-bottom:12px;font-size:13px;">
       <span style="font-weight:600;color:${BRAND};">Documents</span>
@@ -176,7 +190,7 @@ function explorerListPage() {
       <div style="padding:8px 16px;font-size:13px;font-weight:600;color:${BRAND};border-bottom:2px solid ${BRAND};margin-bottom:-1px;">List</div>
     </div>
     <div style="display:flex;align-items:center;gap:6px;margin-bottom:12px;">
-      <span class="checkbox"><span class="box"></span>Include version history size (slower)</span>
+      <span class="checkbox"><span class="box checked"></span>Include version history size (slower)</span>
       ${icon(INFO_SVG, 14, NEUTRAL.text3)}
     </div>
     <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;margin-bottom:8px;">
@@ -187,7 +201,7 @@ function explorerListPage() {
       </div>
     </div>
     <table style="background:#fff;">
-      <thead><tr><th>Name</th><th style="text-align:right;">Size</th><th style="text-align:right;">Items</th><th>Modified</th><th>Status</th></tr></thead>
+      <thead><tr><th>Name</th><th style="text-align:right;">Size</th><th style="text-align:right;">Items</th><th style="text-align:right;">Version History</th><th style="text-align:right;">Version Count</th><th>Modified</th><th>Status</th></tr></thead>
       <tbody>${rowsHtml}</tbody>
     </table>`;
   return pageShell(body, { tab: 'explorer' });

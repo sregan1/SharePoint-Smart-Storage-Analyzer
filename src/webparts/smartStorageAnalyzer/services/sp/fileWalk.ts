@@ -15,19 +15,25 @@ export interface WalkLibraryResult {
   skippedFolderDetails: { url: string; error: string }[];
 }
 
-// Sums SP.FileVersion.Size across a file's retained old versions. Called
-// through a separate, lower-concurrency queue than the folder walk (below)
-// since it doubles per-file request volume and this is opt-in/expensive.
-async function fetchVersionSizeBytes(
+// Sums SP.FileVersion.Size across a file's retained old versions, and counts
+// them along the way — the /Versions collection excludes the current version
+// (it's exactly the retained history), so the count is free from the same
+// call that already fetches size, not an extra request. Called through a
+// separate, lower-concurrency queue than the folder walk (below) since it
+// doubles per-file request volume and this is opt-in/expensive.
+async function fetchVersionInfo(
   client: SpApiClient,
   siteUrl: string,
   fileServerRelativeUrl: string,
-): Promise<number> {
+): Promise<{ sizeBytes: number; count: number }> {
   const url = `${siteUrl}/_api/web/GetFileByServerRelativePath(decodedUrl='${encodeURIComponent(
     odata(fileServerRelativeUrl),
   )}')/Versions?$select=Size`;
   const versions = await client.getJsonPaged(url);
-  return versions.reduce((sum, v) => sum + Number(v.Size ?? 0), 0);
+  return {
+    sizeBytes: versions.reduce((sum, v) => sum + Number(v.Size ?? 0), 0),
+    count: versions.length,
+  };
 }
 
 // Full recursive walk of a library's Files/Folders, needed because the
@@ -101,7 +107,9 @@ export async function walkLibrary(
             entries.map((entry) => new Promise<void>((resolve) => {
               versionQueue.add(async () => {
                 try {
-                  entry.versionSizeBytes = await fetchVersionSizeBytes(client, siteUrl, entry.serverRelativeUrl);
+                  const info = await fetchVersionInfo(client, siteUrl, entry.serverRelativeUrl);
+                  entry.versionSizeBytes = info.sizeBytes;
+                  entry.versionCount = info.count;
                 } catch {
                   skippedVersions++;
                 }

@@ -29,6 +29,17 @@ export interface FolderStorageNode {
   // totalSizeBytes/fileCount are whatever partial total it had when it gave
   // up, usually 0, and must NOT be presented as a confirmed empty folder.
   sizeSource: 'storageMetrics' | 'estimate' | 'error';
+  // The actual failure behind sizeSource === 'error'. Kept because the cause
+  // is genuinely ambiguous — throttling, a 403, a 406 on an odd folder name,
+  // the list view threshold — and guessing at it in the UI ("likely
+  // throttling") sends people to fix the wrong thing.
+  sizeErrorMessage?: string;
+  // The live walk stopped at its folder budget, so totalSizeBytes/fileCount
+  // are a floor ("at least this much") rather than exact. Distinct from
+  // sizeSource === 'error': this is a real, usable measurement — just
+  // deliberately incomplete to keep one folder-open from walking a whole
+  // archive (see MAX_FALLBACK_FOLDERS).
+  sizeApproximate?: boolean;
   children: FolderStorageNode[];
   hasChildren: boolean;
   isLoading?: boolean;
@@ -50,6 +61,11 @@ export interface FileEntry {
   // populated when ScanOptions.includeVersionHistory is true (opt-in — an
   // extra REST call per file). Undefined means "not measured", not zero.
   versionSizeBytes?: number;
+  // Count of those same retained old versions (current version excluded —
+  // that's what the /Versions endpoint itself returns). Comes from the same
+  // call as versionSizeBytes, so it shares its populated-only-when-measured
+  // semantics: undefined means "not measured", not zero.
+  versionCount?: number;
 }
 
 export interface ScanOptions {
@@ -152,6 +168,8 @@ export interface TreemapItem {
   // size/count shown is not a confirmed result, just whatever partial total
   // a throttled/failed live walk had when it gave up.
   sizeUnknown?: boolean;
+  sizeErrorMessage?: string;
+  sizeApproximate?: boolean; // folders only — see FolderStorageNode.sizeApproximate
 }
 
 export interface TreemapRect extends TreemapItem {
@@ -174,5 +192,8 @@ export interface FolderListRow {
   tier?: CandidateTier;       // files only
   authorDisplayName?: string; // files only
   versionSizeBytes?: number;  // files only — folders show '—' (no recursive rollup)
+  versionCount?: number;      // files only — see FileEntry.versionCount
   sizeUnknown?: boolean;      // folders only — see TreemapItem.sizeUnknown
+  sizeErrorMessage?: string;  // folders only — the actual failure, for hover detail
+  sizeApproximate?: boolean;  // folders only — see FolderStorageNode.sizeApproximate
 }

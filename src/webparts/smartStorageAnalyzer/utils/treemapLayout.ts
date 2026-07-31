@@ -116,14 +116,25 @@ export function layoutTreemap(items: TreemapItem[], width: number, height: numbe
 
   const byId = new Map(visible.map((i) => [i.id, i]));
 
-  // Zero/negative-size items (e.g. an empty folder) get a nominal share of
-  // the total so they participate in layout at all instead of collapsing to
-  // zero area; everything then goes through the MIN_CELL_PX floor below,
-  // which is what actually guarantees a clickable size on screen.
+  // Zero/negative-size items (e.g. an empty folder, or a library whose
+  // rollup hasn't populated) get NO nominal share here — only real values
+  // count toward the total the click-target floor is computed from. They
+  // still end up visible: the MIN_CELL_PX floor below applies uniformly to
+  // every item, zero or not, and is what actually guarantees clickability.
+  //
+  // This used to give zero-sized items 1% of the total instead, which is
+  // fine for a folder-level view but breaks badly at library-root scale:
+  // 1% of a few-hundred-GB site total is several GB — enough for a
+  // genuinely-empty (or not-yet-measured) library's square to render
+  // BIGGER than a library that actually holds 2-3GB. The fix is to size
+  // zero items off the MIN_CELL_PX pixel target alone, never off a
+  // fraction of everyone else's total.
   const positiveTotal = visible.reduce((s, i) => s + Math.max(0, i.sizeBytes), 0);
-  const zeroFloor = Math.max(1, positiveTotal * 0.01);
-  const baseValues = visible.map((i) => (i.sizeBytes > 0 ? i.sizeBytes : zeroFloor));
-  const baseTotal = baseValues.reduce((s, v) => s + v, 0);
+  const baseValues = visible.map((i) => Math.max(0, i.sizeBytes));
+  // Falls back to 1 (not 0) only so minValue's division below never sees an
+  // all-zero total — every item is 0 in that case anyway, so the exact
+  // fallback value doesn't matter, only that it's positive.
+  const baseTotal = positiveTotal || 1;
 
   // Convert the MIN_CELL_PX × MIN_CELL_PX target into a "value" floor in the
   // same units as sizeBytes, using the box's current scale (value → area).
@@ -134,7 +145,7 @@ export function layoutTreemap(items: TreemapItem[], width: number, height: numbe
   const minValue = boxArea > 0 ? ((MIN_CELL_PX * MIN_CELL_PX) / boxArea) * baseTotal : 0;
 
   const boxes = squarify(
-    visible.map((i, idx) => ({ id: i.id, value: Math.max(baseValues[idx], minValue) })),
+    visible.map((i, idx) => ({ id: i.id, value: Math.max(baseValues[idx], minValue, 1) })),
     { x: 0, y: 0, width, height },
   );
 

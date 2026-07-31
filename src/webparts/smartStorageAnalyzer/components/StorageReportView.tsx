@@ -11,6 +11,7 @@ import {
   MessageBarBody,
   Divider,
   Tooltip,
+  Spinner,
   makeStyles,
   tokens,
 } from '@fluentui/react-components';
@@ -135,6 +136,18 @@ export const StorageReportView: React.FC<StorageReportViewProps> = ({
   const [compareIds, setCompareIds] = React.useState<string[]>([]);
   const [showAllSites, setShowAllSites] = React.useState(false);
 
+  // Which history entry's View was just clicked, and which export is running —
+  // purely so the button can show a spinner immediately. Both View (setting
+  // entries into a many-thousand-row table) and Export (building a workbook or
+  // CSV in memory) are synchronous, CPU-bound work on the main thread once
+  // started; without a state flip BEFORE that work begins, the click has no
+  // visible effect until it's all done, which is what reads as unresponsive on
+  // a large report. See handleView/handleExportExcel/handleExportCsv for how
+  // the flag is given a chance to paint before the heavy work starts.
+  const [pendingViewId, setPendingViewId] = React.useState<string | null>(null);
+  const [excelExporting, setExcelExporting] = React.useState(false);
+  const [csvExporting, setCsvExporting] = React.useState(false);
+
   const abortControllerRef = React.useRef<AbortController | null>(null);
   // Per-file counter fed by onEntry (fires potentially thousands of times
   // per scan) — flushed into `progress` state on the existing elapsed-timer
@@ -227,6 +240,16 @@ export const StorageReportView: React.FC<StorageReportViewProps> = ({
     abortControllerRef.current?.abort();
   };
 
+  // Double rAF: the first fires after the browser has accepted the current
+  // frame's updates, the second after it has actually painted them — so the
+  // spinner set just before calling this is guaranteed on screen before the
+  // synchronous, CPU-bound work in `fn` starts blocking the main thread.
+  // (A single rAF, or setTimeout, is not reliably late enough in every
+  // browser to guarantee the intervening paint happened first.)
+  const afterPaint = (fn: () => void): void => {
+    requestAnimationFrame(() => requestAnimationFrame(fn));
+  };
+
   const filteredEntries = React.useMemo(
     () => (staleOnly ? entries.filter((e) => e.tier !== CandidateTier.Active) : entries),
     [entries, staleOnly],
@@ -236,14 +259,30 @@ export const StorageReportView: React.FC<StorageReportViewProps> = ({
   // unlike CSV it has real ways to fail (chunk fetch, out-of-memory on a
   // huge report). Left un-caught, a failure here was an invisible unhandled
   // promise rejection — the button just did nothing with no way to tell why.
-  const handleExportExcel = async (): Promise<void> => {
-    if (!summary) return;
-    try {
-      setError('');
-      await excel.export(filteredEntries, summary, siteUrl);
-    } catch (err: any) {
-      setError(`Excel export failed: ${err?.message ?? String(err)}`);
-    }
+  const handleExportExcel = (): void => {
+    if (!summary || excelExporting) return;
+    setError('');
+    setExcelExporting(true);
+    afterPaint(() => {
+      excel.export(filteredEntries, summary, effectiveSiteUrl)
+        .catch((err: any) => setError(`Excel export failed: ${err?.message ?? String(err)}`))
+        .finally(() => setExcelExporting(false));
+    });
+  };
+
+  const handleExportCsv = (): void => {
+    if (csvExporting) return;
+    setError('');
+    setCsvExporting(true);
+    afterPaint(() => {
+      try {
+        excel.exportCsv(filteredEntries, !!summary?.versionHistoryIncluded, effectiveSiteUrl);
+      } catch (err: any) {
+        setError(`CSV export failed: ${err?.message ?? String(err)}`);
+      } finally {
+        setCsvExporting(false);
+      }
+    });
   };
 
   // A report loaded from history shows/hides the version column based on how
@@ -273,6 +312,12 @@ export const StorageReportView: React.FC<StorageReportViewProps> = ({
       align: 'right' as const,
       sortValue: (e: FileEntry) => e.versionSizeBytes ?? -1,
       render: (e: FileEntry) => <span>{e.versionSizeBytes !== undefined ? formatBytes(e.versionSizeBytes) : '—'}</span>,
+    }, {
+      key: 'versionCount',
+      header: 'Version Count',
+      align: 'right' as const,
+      sortValue: (e: FileEntry) => e.versionCount ?? -1,
+      render: (e: FileEntry) => <span>{e.versionCount !== undefined ? e.versionCount : '—'}</span>,
     }] : []),
     {
       key: 'modified',
@@ -323,6 +368,12 @@ export const StorageReportView: React.FC<StorageReportViewProps> = ({
 
   const effectiveStaleDays = viewedReport?.options.staleDays ?? staleDays;
   const effectiveVeryStaleDays = viewedReport?.options.veryStaleDays ?? veryStaleDays;
+  // A viewed report can be from a DIFFERENT site (the cross-site history
+  // toggle) — exports must reflect that report's own site, not whatever site
+  // the page happens to be on right now, same reasoning as the thresholds
+  // above. Used for both the export filename and the Summary sheet's own
+  // "Site URL" row (see excel.export's siteUrl param).
+  const effectiveSiteUrl = viewedReport?.siteUrl ?? siteUrl;
 
   const partialWarnings: string[] = [];
   if (summary) {
@@ -334,16 +385,39 @@ export const StorageReportView: React.FC<StorageReportViewProps> = ({
     if (skippedSites > 0) {
       partialWarnings.push(`${skippedSites} subsite${skippedSites === 1 ? '' : 's'} could not be accessed and ${skippedSites === 1 ? 'was' : 'were'} skipped`);
     }
+    // This was previously computed and stored but never surfaced anywhere —
+    // when every per-file version fetch fails (e.g. sustained throttling on
+    // a large scan), the version-history tile/column silently show 0 B / "—"
+    // for everything with no indication anything went wrong. Indistinguishable
+    // from "this site genuinely has no version history" unless called out.
+    const skippedVersions = summary.skippedVersions ?? 0;
+    if (summary.versionHistoryIncluded && skippedVersions > 0) {
+      partialWarnings.push(
+        `version history could not be measured for ${skippedVersions} file${skippedVersions === 1 ? '' : 's'} ` +
+        '(excluded from the version history totals below, not counted as zero)',
+      );
+    }
   }
 
   const viewReport = (h: StoredReport): void => {
-    setViewedReport(h);
-    setEntries(h.entries);
-    setSummary(h.summary);
-    setError('');
-    setWarning('');
-    setCanceledNotice(false);
-    setShowSkippedDetails(false);
+    if (pendingViewId) return;
+    setPendingViewId(h.id);
+    // setEntries below hands a many-thousand-row array to StorageTable, which
+    // renders one real <tr> per row (no virtualization) and sorts the full
+    // array up front — on a large report that's real, synchronous work on
+    // the main thread. Deferred past a paint so the spinner set above is
+    // actually visible first, rather than the click looking dead until the
+    // whole re-render finishes.
+    afterPaint(() => {
+      setViewedReport(h);
+      setEntries(h.entries);
+      setSummary(h.summary);
+      setError('');
+      setWarning('');
+      setCanceledNotice(false);
+      setShowSkippedDetails(false);
+      setPendingViewId(null);
+    });
   };
 
   return (
@@ -500,11 +574,20 @@ export const StorageReportView: React.FC<StorageReportViewProps> = ({
 
           <div className={styles.row}>
             <Checkbox label="Show archival candidates only" checked={staleOnly} onChange={(_, d) => setStaleOnly(!!d.checked)} />
-            <Button icon={<DocumentArrowDown24Regular />} onClick={handleExportExcel}>
-              Export Excel
+            <Button
+              icon={excelExporting ? <Spinner size="tiny" /> : <DocumentArrowDown24Regular />}
+              onClick={handleExportExcel}
+              disabled={excelExporting}
+            >
+              {excelExporting ? 'Exporting…' : 'Export Excel'}
             </Button>
-            <Button icon={<DocumentArrowDown24Regular />} appearance="secondary" onClick={() => excel.exportCsv(filteredEntries)}>
-              Export CSV
+            <Button
+              icon={csvExporting ? <Spinner size="tiny" /> : <DocumentArrowDown24Regular />}
+              appearance="secondary"
+              onClick={handleExportCsv}
+              disabled={csvExporting}
+            >
+              {csvExporting ? 'Exporting…' : 'Export CSV'}
             </Button>
           </div>
 
@@ -553,7 +636,13 @@ export const StorageReportView: React.FC<StorageReportViewProps> = ({
                   Partial
                 </Badge>
               )}
-              <Button appearance="subtle" size="small" onClick={() => viewReport(h)}>
+              <Button
+                appearance="subtle"
+                size="small"
+                icon={pendingViewId === h.id ? <Spinner size="tiny" /> : undefined}
+                onClick={() => viewReport(h)}
+                disabled={!!pendingViewId}
+              >
                 View
               </Button>
               <Button

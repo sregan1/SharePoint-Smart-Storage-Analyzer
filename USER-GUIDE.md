@@ -56,9 +56,9 @@ You must be a **Site Owner** on the site (or otherwise hold the Manage Web / Man
 
 The web part is added to a SharePoint page by a site owner or administrator. Once added, navigate to the page where it has been placed — the web part automatically connects to that site; no setup or configuration is required to get started.
 
-By default, it opens on the **Explorer** view, showing a treemap of the site's default document library. (A site administrator can change this — see [Web Part Configuration](#web-part-configuration).)
+By default, it opens on the **Explorer** view, showing a treemap of every document library on the site. (A site administrator can change this — see [Web Part Configuration](#web-part-configuration).)
 
-![The Explorer opening directly into a treemap of the default document library](docs/screenshots/01_explorer_treemap.png)
+![The Explorer opening on a site-wide treemap of every document library](docs/screenshots/01_explorer_treemap.png)
 
 ### If You Don't Have Access
 
@@ -74,14 +74,20 @@ Contact a site owner to request access, or have them run the tool on your behalf
 
 ### What It Does
 
-The Explorer opens directly into a **treemap** of the site's default document library — no picker screen first. Each rectangle is a folder or file, sized proportionally to how much storage it uses, so the biggest space users are visually obvious at a glance. Click any folder to zoom into it and see what's inside.
+The Explorer opens into a **treemap of every document library on the site**, each library sized by how much storage it uses — so the first thing you see answers "which library is the storage actually in?" Click a library to drill into it, then keep clicking folders to go deeper. Each rectangle is a library, folder, or file, sized proportionally to its storage, so the biggest space users are visually obvious at a glance.
+
+The breadcrumb always starts at **All libraries**; click it to return to the site-wide view. The button row along the top also switches libraries directly, if you'd rather skip a step.
+
+> **Note on library sizes:** these come from SharePoint's own rolled-up storage figures, which are recalculated by a periodic background job and can lag recent activity. A library SharePoint hasn't reported a size for yet appears as **"Unknown"** (a striped square) rather than as 0 bytes. Open it and the tool measures it exactly. This is deliberate — measuring every library exactly up front would mean walking the entire site just to draw the opening screen.
 
 ### The Treemap View
 
-- **Square size = storage weight.** Bigger rectangles use more space. Folders are shown in blue; files are colored by their [archival status](#understanding-archival-status).
-- **Click a folder** to drill into it — the treemap updates to show that folder's own contents.
+- **Square size = storage weight.** Bigger rectangles use more space. Libraries and folders are shown in blue; files are colored by their [archival status](#understanding-archival-status). A striped square means the size couldn't be determined — see the note above (at library level) or the throttling note below (at folder level).
+- **Click a library or folder** to drill into it — the treemap updates to show that item's own contents.
 - **Folder cells show their size and file count** (e.g. "24.6 MB · 138 files") when the cell is large enough to fit the text; smaller cells still show at least the name, and hovering any cell shows full detail in a tooltip.
+- **A size starting with "≥"** (e.g. "≥ 340 MB") means the folder is larger than shown but measuring it further ran into this view's request budget before it could finish — it's a floor, not an estimate. Open the folder directly to measure deeper, or raise **Concurrent API requests** in Settings so more gets measured before the budget is reached. This is distinct from **"Unknown"**, which means nothing could be measured at all.
 - The smallest items are floored to a minimum on-screen size so they stay easy to click even on a site with many small files — treemap proportions favor clickability slightly over strict mathematical precision for the tiniest items.
+- **"Other (N items)"** appears when a folder has more items than the treemap can usefully draw as separate squares — the smallest ones are folded into a single gray cell instead of being drawn as slivers too small to see or click. Hovering it explains what's inside; a note above the treemap offers a one-click **Switch to List view** button, since the List view has no such folding and shows every item individually.
 - While a folder's sizes are loading, a progress bar with a live **"N of M folders"** counter is shown instead of the treemap; the treemap appears once every size has resolved.
 
 ### The List View
@@ -100,6 +106,12 @@ This only applies to the files currently listed (not a recursive rollup for the 
 
 In the **Treemap**, turning this on changes how file squares are sized: each file square is weighted by its file size *plus* its version-history size combined, so files with a lot of retained version history appear visibly larger. Hovering a file (or, for a large enough square, the text shown directly on it) breaks the total back down, e.g. "24.6 MB (18.2 MB file + 6.4 MB version history)". Folder squares are unaffected — they keep showing file-content size only, for the reason above.
 
+In the **List View**, turning this on adds two columns: **Version History** (the retained-version storage, in human-readable form) and **Version Count** (how many older versions are being kept — the current version is not counted).
+
+### Refreshing
+
+Folder and library sizes are cached briefly after loading so repeat visits are fast. If you've just added, deleted, or moved files and want the Explorer to reflect that immediately rather than waiting for the cache to expire, click **Refresh** — it clears the cached sizes for the current site and re-measures everything you're currently viewing.
+
 ### Library Switcher and Breadcrumbs
 
 - The button row at the top switches between every document library on the current site without leaving the Explorer.
@@ -107,7 +119,7 @@ In the **Treemap**, turning this on changes how file squares are sized: each fil
 
 ### Exporting
 
-From the **List** view, use **Export Excel** or **Export CSV** to download the current folder's listing — name, size, item count, modified date, archival status, and version-history size (if that toggle is checked) — for the folder you're currently viewing (not the whole site; use [Storage Report](#storage-report) for that).
+From the **List** view, use **Export Excel** or **Export CSV** to download the current folder's listing — name, size, item count, modified date, archival status, and version history size and count (if that toggle is checked) — for the folder you're currently viewing (not the whole site; use [Storage Report](#storage-report) for that). The exported filename includes the site's name, so files from different sites don't collide when saved to the same folder.
 
 ---
 
@@ -133,17 +145,17 @@ While the scan runs, a progress bar tracks how many libraries have been processe
 
 ### Version History in the Storage Report
 
-Checking **Include version history size (slower)** adds a per-file "Version history" column to the results table and, once the scan completes, an extra summary tile — **Version history size** — showing the total across every file scanned. An info icon next to that tile explains that this figure is *additional* storage on top of Total size, not a subset of it: version history is real space consumed by older, retained copies of a file's content.
+Checking **Include version history size (slower)** adds two per-file columns to the results table — **Version History Size** (shown both in human-readable form and in raw bytes) and **Version Count** (how many older versions are retained) — and, once the scan completes, an extra summary tile, **Version History Size**, showing the total across every file scanned. An info icon next to that tile explains that this figure is *additional* storage on top of Total size, not a subset of it: version history is real space consumed by older, retained copies of a file's content.
 
 Because this requires one extra lookup per file across the entire scan, expect a full scan with this enabled to take meaningfully longer than one without it, especially on large sites — leave it unchecked for a quick size overview and turn it on when you specifically need to account for version-history storage.
 
 ### If Some Folders or Subsites Can't Be Read
 
-If part of the site couldn't be scanned — a folder that errors out, or (with **Include subsites** on) a subsite the current user can't access — the results are still shown, but a warning banner notes that the results are partial and how many folders/subsites were skipped. Click **Show details** to see the specific folder URLs and the error each one hit, with a **Copy to clipboard** button so you can pass the list along (e.g. to request access, or to investigate separately).
+If part of the site couldn't be scanned — a folder that errors out, or (with **Include subsites** on) a subsite the current user can't access — the results are still shown, but a warning banner notes that the results are partial and how many folders/subsites were skipped. If **Include version history size** was on and some files' version history specifically couldn't be read (this happens independently of the folder/subsite skips above, most often due to throttling), the same banner also states how many files' version history was skipped, so a low or zero version-history total isn't mistaken for "this site has no old versions." Click **Show details** to see the specific folder URLs and the error each one hit, with a **Copy to clipboard** button so you can pass the list along (e.g. to request access, or to investigate separately).
 
 ### Browsing the Results
 
-Once the scan completes, summary tiles show the total size scanned, total files, and the count and size of Stale and Very-stale files (plus Version history size, if that option was enabled). An info icon next to **Total size** is a reminder that it's an exact sum of every scanned file's current content only — never an estimate, and never including version history, whether or not that option was on for the scan. Below the tiles, the full results table lists every file — library, name, size, version history (if enabled), modified date, author, and archival status — sortable by any column.
+Once the scan completes, summary tiles show the total size scanned, total files, and the count and size of Stale and Very-stale files (plus Version History Size, if that option was enabled). An info icon next to **Total size** is a reminder that it's an exact sum of every scanned file's current content only — never an estimate, and never including version history, whether or not that option was on for the scan. Below the tiles, the full results table lists every file — library, name, size, version history size and count (if enabled), modified date, author, and archival status — sortable by any column.
 
 ![Completed scan results, showing the summary tiles and the sortable file-level results table](docs/screenshots/05_report_results.png)
 
@@ -153,6 +165,8 @@ Check **Show archival candidates only** to filter the table (and the exports) do
 
 - **Export Excel** — a color-coded `.xlsx` workbook with a Summary sheet and a full file-level Details sheet.
 - **Export CSV** — a plain-text alternative for scripted processing or import into another tool.
+
+Both exported filenames include the site's name, so reports from different sites don't collide when saved to the same folder. Reopening a saved scan from a different site (via **Show reports from other sites**, below) and exporting it uses that scan's own site name, not the site the web part is currently on.
 
 ### Scan History
 
@@ -210,7 +224,7 @@ Open **Settings** from the gear icon in the top-right corner of the header on an
 
 | Setting | Default | Description |
 |---------|---------|-------------|
-| **Concurrent API requests** | 6 | How many SharePoint API requests run in parallel during scans and folder loads (1–15). SharePoint's throttling threshold is dynamic, not a fixed number Microsoft publishes — the app retries automatically on throttling (HTTP 429) with a short escalating backoff, but very high values can still net out slower than a moderate one. |
+| **Concurrent API requests** | 6 | How many SharePoint API requests run in parallel during scans and folder loads (1–15). SharePoint's throttling threshold is dynamic, not a fixed number Microsoft publishes — the app retries automatically on throttling (HTTP 429/503/406) with an escalating backoff, but very high values can still net out slower than a moderate one. This also sizes how much the Explorer can measure before a fallback folder/library walk hits its request budget — raising it lets a walk go deeper before falling back to a "≥" (at least) result. |
 
 If you see scans getting *slower* rather than faster as you raise this, that's throttling — turn it back down rather than waiting it out.
 
@@ -323,13 +337,19 @@ A: Yes. The tool talks only to your own SharePoint environment via the standard 
 
 - Scan time scales with file count and, if enabled, the number of subsites. Try disabling **Include subsites**, **Include hidden/system libraries**, or **Include version history size** to narrow the scope, or lower **Concurrent API requests** if you're seeing throttling (HTTP 429) errors in the browser console.
 
+### A scan or folder load pauses for a long stretch, then continues
+
+- This is the tool deliberately waiting out SharePoint throttling. On large sites, SharePoint will ask clients to slow down (HTTP 429) and can request waits of a minute or more. When that happens, the tool pauses *all* of its requests for as long as SharePoint asks, automatically reduces how many requests it makes at once, and then speeds back up as things recover — so a long pause is it working correctly rather than hanging. Waiting is deliberately preferred over giving up, because the alternative is a report with gaps in it.
+- If it happens constantly on your tenant, lower **Concurrent API requests** in Settings. Counter-intuitively, a lower value often finishes *faster* on a busy tenant, because it avoids triggering throttling in the first place.
+- Browser console messages beginning `[SmartStorageAnalyzer] Throttled by SharePoint` confirm this is what's happening, and show the reduced concurrency being used.
+
 ### The Explorer says a folder "has no subfolders or files," but its size looked non-zero
 
 - This means the folder's own file listing failed to load (a transient error or throttling) — an error banner should appear explaining what happened. If you don't see one, try reloading the folder; a genuinely empty folder never shows a non-zero size in its parent view in the first place.
 
 ### An error mentions "HTTP 406"
 
-- This means SharePoint rejected one specific request — usually because a folder or file name contains a character its REST API doesn't handle well (a trailing space or period, certain Unicode characters, or a name starting with `~`), or because the item sits at the end of an unusually long, deeply-nested folder path. The tool automatically retries once before surfacing this, so if you see it, the retry didn't resolve it. Try again in a moment; if it keeps happening on the same folder, note which one — it likely has a name worth renaming — and continue elsewhere, since it typically affects only that one item rather than the whole scan.
+- This is SharePoint throttling, not a problem with a specific file or folder name — a 406 happens when SharePoint redirects an over-limit request to an HTML "please slow down" page instead of the JSON response the tool asked for. The tool treats it exactly like the more familiar HTTP 429: it pauses and automatically retries with backoff, the same as described [above](#a-scan-or-folder-load-pauses-for-a-long-stretch-then-continues). If it persists, lower **Concurrent API requests** in Settings rather than looking for anything wrong with the item itself.
 
 ### A scan finished with a warning that some folders or subsites were skipped
 

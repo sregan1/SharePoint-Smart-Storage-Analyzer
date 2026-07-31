@@ -229,15 +229,234 @@ export class SpApiClient {
   /** True while the shared throttle gate is holding requests back. */
   public get isThrottled(): boolean { return this.throttledUntilMs > Date.now(); }
 
-  // 406 from SharePoint REST is usually a malformed/rejected request (a
-  // folder or file name with a character the OData parser or IIS request
-  // filtering chokes on, or an over-long path) — not transient in the way
-  // 429/503 are. But it has also been observed to clear on its own on SPO's
-  // front end under load, so one short retry is worth it before giving up;
-  // unlike 429/503 there's no Retry-After to honor, so a single fixed pause.
-  private static readonly RETRY_406_DELAY_SECONDS = 3;
+  // 406 IS A THROTTLING SIGNAL — do not "fix" this by treating it as a bad
+  // request. When SPO decides to shed load it redirects the call to its HTML
+  // throttle page (/_layouts/15/Throttle.htm); we asked for JSON, HTML is not
+  // acceptable, so the browser surfaces 406 instead of 429. Console evidence:
+  // hundreds of "GET /_layouts/15/Throttle.htm ... 406" entries interleaved
+  // one-to-one with our own failures, on folders with entirely ordinary names
+  // ("IP", "CSRs", "2019"). A genuinely malformed path yields 400/404, not 406.
+  //
+  // Getting this wrong is costly in both directions: it made every throttle
+  // look like a permanent per-folder defect (so no backoff, no gate, instant
+  // give-up), and it told users to stop adjusting the one setting that
+  // actually helps.
+  private static isThrottleResponse(status: number): boolean {
+    return status === 429 || status === 503 || status === 406;
+  }
 
-  public async getJson(url: string, attempt = 0): Promise<any> {
+  // ── Request coalescing via SharePoint's $batch endpoint ─────────────────
+  // The recursive folder walks are the dominant source of request volume:
+  // 2 requests per folder (Files + Folders), and the Explorer's fallback walk
+  // recurses a whole subtree per subfolder whose StorageMetrics rollup reads 0
+  // — which the rollup commonly does. Opening one folder with 30 subfolders of
+  // ~200 folders each is ~12,000 requests to paint a single screen.
+  //
+  // Rather than restructure those walks (their recursion carries subtle
+  // deadlock- and cache-poisoning invariants), coalescing lives here at the
+  // request layer: callers keep calling getJson one URL at a time, and
+  // whatever overlaps within a short window is bundled into one $batch POST.
+  // The walks already run scanConcurrency folders at once, so overlap is the
+  // normal case and grouping happens naturally — every call site benefits
+  // (both walks, the StorageMetrics probes, and version-history lookups)
+  // without any of them changing.
+  private batchQueue: { url: string; resolve: (v: any) => void; reject: (e: any) => void }[] = [];
+  private batchTimer: ReturnType<typeof setTimeout> | undefined;
+  private batchSeq = 0;
+  // SPO documents a higher per-batch ceiling, but large batches are slower to
+  // fail and harder to attribute when one member misbehaves. 20 captures
+  // nearly all of the win at a fraction of the blast radius.
+  private static readonly BATCH_MAX = 20;
+  // Long enough for concurrent walk tasks to land in the same batch, short
+  // enough to be invisible next to a SharePoint round trip.
+  private static readonly BATCH_WINDOW_MS = 15;
+
+  /** Escape hatch: set false to bypass $batch entirely (one request per call). */
+  public batchingEnabled = true;
+  private batchFallbackWarned = false;
+
+  public async getJson(url: string): Promise<any> {
+    if (!this.batchingEnabled) return this.getJsonDirect(url);
+    return new Promise<any>((resolve, reject) => {
+      this.batchQueue.push({ url, resolve, reject });
+      if (this.batchQueue.length >= SpApiClient.BATCH_MAX) this.flushBatches();
+      else if (this.batchTimer === undefined) {
+        this.batchTimer = setTimeout(() => this.flushBatches(), SpApiClient.BATCH_WINDOW_MS);
+      }
+    });
+  }
+
+  private flushBatches(): void {
+    if (this.batchTimer !== undefined) {
+      clearTimeout(this.batchTimer);
+      this.batchTimer = undefined;
+    }
+    const queued = this.batchQueue.splice(0, this.batchQueue.length);
+    if (queued.length === 0) return;
+
+    // A $batch POST goes to one web's endpoint and cannot span site
+    // collections, so members are grouped by the site URL their own request
+    // targets (everything before /_api/). A subsite-inclusive scan has
+    // requests for several webs in flight at once, and mixing them into one
+    // batch would fail the whole thing.
+    const bySite = new Map<string, typeof queued>();
+    for (const item of queued) {
+      const site = item.url.split('/_api/')[0];
+      const group = bySite.get(site);
+      if (group) group.push(item);
+      else bySite.set(site, [item]);
+    }
+    bySite.forEach((items, site) => {
+      for (let i = 0; i < items.length; i += SpApiClient.BATCH_MAX) {
+        void this.sendBatch(site, items.slice(i, i + SpApiClient.BATCH_MAX));
+      }
+    });
+  }
+
+  private async sendBatch(siteUrl: string, group: typeof this.batchQueue): Promise<void> {
+    // Not worth the multipart envelope for a lone request.
+    if (group.length === 1) {
+      try { group[0].resolve(await this.getJsonDirect(group[0].url)); }
+      catch (err) { group[0].reject(err); }
+      return;
+    }
+
+    const boundary = `batch_ssa_${++this.batchSeq}`;
+    const body = group.map((item) => (
+      `--${boundary}\r\n` +
+      'Content-Type: application/http\r\n' +
+      'Content-Transfer-Encoding: binary\r\n\r\n' +
+      `GET ${item.url} HTTP/1.1\r\n` +
+      'Accept: application/json;odata=nometadata\r\n\r\n'
+    )).join('') + `--${boundary}--\r\n`;
+
+    let parts: { status: number; body: string }[];
+    try {
+      parts = await this.postBatch(siteUrl, boundary, body);
+    } catch (err: any) {
+      // The batch envelope itself failed (or the endpoint is unavailable on
+      // this tenant). Fall back to individual requests rather than failing
+      // every caller in the group — batching is an optimization and must
+      // never be the reason a folder reads as unreadable.
+      //
+      // Warned once, because a persistent envelope-level failure (a rejected
+      // header, a tenant with $batch disabled) would otherwise degrade every
+      // request to unbatched with no signal at all — the scan would just be
+      // as slow as before for no apparent reason.
+      if (!this.batchFallbackWarned) {
+        this.batchFallbackWarned = true;
+        // eslint-disable-next-line no-console
+        console.warn(
+          `[SmartStorageAnalyzer] $batch unavailable (${err?.message ?? String(err)}) — ` +
+          'falling back to individual requests for the rest of this session.',
+        );
+      }
+      await Promise.all(group.map(async (item) => {
+        try { item.resolve(await this.getJsonDirect(item.url)); }
+        catch (e) { item.reject(e); }
+      }));
+      return;
+    }
+
+    // Batch responses come back in request order. If the count doesn't line
+    // up, the mapping is untrustworthy — resolving the wrong body against the
+    // wrong caller would silently attribute one folder's contents to another,
+    // so fall back rather than guess.
+    if (parts.length !== group.length) {
+      // eslint-disable-next-line no-console
+      console.warn(
+        `[SmartStorageAnalyzer] $batch returned ${parts.length} parts for ${group.length} requests — ` +
+        'falling back to individual requests for this group.',
+      );
+      await Promise.all(group.map(async (item) => {
+        try { item.resolve(await this.getJsonDirect(item.url)); }
+        catch (err) { item.reject(err); }
+      }));
+      return;
+    }
+
+    await Promise.all(group.map(async (item, i) => {
+      const part = parts[i];
+      // A member throttled inside the batch is retried on its own, through
+      // the normal governor/backoff path, so it gets the same treatment an
+      // unbatched request would.
+      if (SpApiClient.isThrottleResponse(part.status)) {
+        try { item.resolve(await this.getJsonDirect(item.url)); }
+        catch (err) { item.reject(err); }
+        return;
+      }
+      if (part.status >= 400) {
+        item.reject(new Error(`HTTP ${part.status} on ${item.url} — ${part.body.substring(0, 300)}`));
+        return;
+      }
+      try { item.resolve(part.body ? JSON.parse(part.body) : {}); }
+      catch (err) { item.reject(err); }
+    }));
+  }
+
+  private async postBatch(siteUrl: string, boundary: string, body: string): Promise<{ status: number; body: string }[]> {
+    await this.waitOutThrottle();
+    await this.acquireSlot();
+    let resp;
+    try {
+      // jsonRequest/jsonResponse MUST both be off. The v1 configuration is
+      // JSON-oriented, and a $batch payload is multipart/mixed both ways —
+      // leaving jsonResponse on makes SPHttpClient reject the call outright
+      // with "ISPHttpClientConfiguration.jsonResponse is enabled, which
+      // requires the OData-Version header to be 3.0 or 4.0".
+      //
+      // Blanking `odata-version` by hand (the previous attempt at this) does
+      // NOT work — it trips that same guard, so every batch failed and
+      // sendBatch quietly fell back to unbatched requests. Because the
+      // fallback is silent-by-design, the only symptom was that batching
+      // never actually happened; the one-time warning below exists to make
+      // exactly that visible.
+      const batchConfig = SPHttpClient.configurations.v1.overrideWith({
+        jsonRequest: false,
+        jsonResponse: false,
+      });
+      resp = await this.context.spHttpClient.post(`${siteUrl}/_api/$batch`, batchConfig, {
+        headers: {
+          'Content-Type': `multipart/mixed; boundary=${boundary}`,
+          'X-ClientService-ClientTag': CLIENT_TAG,
+        },
+        body,
+      });
+    } finally {
+      this.releaseSlot();
+    }
+
+    // Throttling of the batch POST as a whole: trip the shared gate and let
+    // the caller fall back, which re-runs each member through getJsonDirect
+    // and its full retry budget.
+    if (SpApiClient.isThrottleResponse(resp.status)) {
+      const header = parseInt(resp.headers.get('Retry-After') ?? '', 10);
+      this.noteThrottled(Math.min(isNaN(header) ? 5 : Math.max(header, 1), SpApiClient.MAX_RETRY_AFTER_SECONDS));
+      throw new Error(`HTTP ${resp.status} on $batch`);
+    }
+    if (!resp.ok) throw new Error(`HTTP ${resp.status} on $batch`);
+    this.noteSuccess();
+    return SpApiClient.parseBatchResponse(await resp.text());
+  }
+
+  // Splits a multipart/mixed batch response into its inner HTTP responses.
+  // The response boundary is generated by the server and differs from the
+  // request's, so it's matched by shape rather than assumed.
+  private static parseBatchResponse(text: string): { status: number; body: string }[] {
+    const out: { status: number; body: string }[] = [];
+    for (const chunk of text.split(/--batchresponse_[0-9a-zA-Z._-]+/)) {
+      const status = /HTTP\/1\.1\s+(\d{3})/.exec(chunk);
+      if (!status) continue;
+      // Inner headers end at the first blank line after the status line; the
+      // remainder is the body (JSON for everything this app requests).
+      const headerEnd = chunk.indexOf('\r\n\r\n', status.index);
+      const raw = headerEnd === -1 ? '' : chunk.substring(headerEnd + 4);
+      out.push({ status: parseInt(status[1], 10), body: raw.trim() });
+    }
+    return out;
+  }
+
+  public async getJsonDirect(url: string, attempt = 0): Promise<any> {
     // Both gates, in this order: wait out any tenant-wide throttle window
     // first, then take a slot from the global in-flight ceiling.
     await this.waitOutThrottle();
@@ -254,10 +473,12 @@ export class SpApiClient {
       this.releaseSlot();
     }
 
-    if (resp.status === 429 || resp.status === 503) {
+    if (SpApiClient.isThrottleResponse(resp.status)) {
       const fallback = SpApiClient.RETRY_BACKOFF_SECONDS[
         Math.min(attempt, SpApiClient.RETRY_BACKOFF_SECONDS.length - 1)
       ];
+      // 406 (the throttle-page redirect) carries no Retry-After, so it always
+      // falls through to the escalating schedule.
       const header = parseInt(resp.headers.get('Retry-After') ?? '', 10);
       const waitSeconds = Math.min(
         isNaN(header) ? fallback : Math.max(header, 1),
@@ -267,18 +488,15 @@ export class SpApiClient {
       // still benefits from backing off, whether or not THIS request retries.
       this.noteThrottled(waitSeconds);
       if (attempt < SpApiClient.RETRY_BACKOFF_SECONDS.length) {
-        return this.getJson(url, attempt + 1);
+        return this.getJsonDirect(url, attempt + 1);
       }
       throw new Error(
-        `HTTP ${resp.status} on ${url} — still throttled after ` +
-        `${SpApiClient.RETRY_BACKOFF_SECONDS.length} attempts. Lower Concurrent API requests in Settings.`,
+        `HTTP ${resp.status} on ${url} — SharePoint is throttling this account ` +
+        `(still blocked after ${SpApiClient.RETRY_BACKOFF_SECONDS.length} attempts). ` +
+        'Lower Concurrent API requests in Settings and try again shortly.',
       );
     }
 
-    if (resp.status === 406 && attempt < 1) {
-      await new Promise((r) => setTimeout(r, SpApiClient.RETRY_406_DELAY_SECONDS * 1000));
-      return this.getJson(url, attempt + 1);
-    }
     if (!resp.ok) {
       const txt = await resp.text();
       // Include the URL — 406/400-class failures are almost always specific

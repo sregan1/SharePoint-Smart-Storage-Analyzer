@@ -6,6 +6,7 @@ import { SpApiClient } from './sp/spCore';
 import * as siteDiscovery from './sp/siteDiscovery';
 import * as storageMetrics from './sp/storageMetrics';
 import * as libraryStats from './sp/libraryStats';
+import * as folderSizeCache from './sp/folderSizeCache';
 import * as storageScan from './sp/storageScan';
 import { ScanResult } from './sp/storageScan';
 
@@ -28,6 +29,13 @@ export class StorageAnalyzerService {
   get scanConcurrency(): number { return this.client.scanConcurrency; }
   set scanConcurrency(value: number) { this.client.scanConcurrency = value; }
 
+  /**
+   * True while requests are paused waiting out SharePoint throttling. Views
+   * poll this so a long stall can say *why* it's stalling — a 60s+ throttle
+   * wait is otherwise indistinguishable from the app having hung.
+   */
+  get isThrottled(): boolean { return this.client.isThrottled; }
+
   // ── Site / permission checks ──────────────────────────────────────────────
 
   checkCanManageWeb(siteUrl: string): Promise<boolean> {
@@ -40,6 +48,29 @@ export class StorageAnalyzerService {
     return libraryStats.getLibrariesWithStats(this.client, siteUrl, includeHidden);
   }
 
+  /**
+   * The library list with no size computation at all — one request.
+   *
+   * Preferred over getLibrariesWithStats by any caller that resolves sizes
+   * itself: that function only skips size computation when a library *named*
+   * "Documents"/"Shared Documents" exists, and otherwise falls back to a full
+   * recursive walk per library to pick a default by size. For the Explorer,
+   * which now sizes libraries via getLibraryRollups (probe-only, by design),
+   * that hidden path would be a whole-site walk before the cheap path even ran.
+   */
+  getLibraries(siteUrl: string, includeHidden: boolean): Promise<LibraryInfo[]> {
+    return siteDiscovery.getLibraries(this.client, siteUrl, includeHidden);
+  }
+
+  /**
+   * Per-library sizes for the Explorer's site-root treemap. StorageMetrics
+   * probe per library and nothing more — see getLibraryRollups for why this
+   * must never fall back to a recursive walk.
+   */
+  getLibraryRollups(siteUrl: string, libraries: LibraryInfo[]): Promise<libraryStats.LibraryRollup[]> {
+    return libraryStats.getLibraryRollups(this.client, siteUrl, libraries);
+  }
+
   // ── Folder Explorer (StorageMetrics-driven, lazy per level) ──────────────
 
   getFolderChildren(
@@ -48,6 +79,15 @@ export class StorageAnalyzerService {
     onProgress?: storageMetrics.FolderChildProgress,
   ): Promise<FolderStorageNode[]> {
     return storageMetrics.getFolderChildren(this.client, siteUrl, parentServerRelativeUrl, onProgress);
+  }
+
+  /**
+   * Discards cached folder sizes so the next load re-measures from SharePoint.
+   * Backs the Explorer's Refresh action — without it, a folder that came back
+   * unmeasurable or truncated stays that way for the cache's full TTL.
+   */
+  clearFolderSizeCache(siteUrl?: string): void {
+    folderSizeCache.clearCachedFolderChildren(siteUrl);
   }
 
   getFolderFiles(

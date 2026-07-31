@@ -75,6 +75,23 @@ function sanitize(s: string): string {
   return s.replace(/[^a-z0-9]+/gi, '_').replace(/^_+|_+$/g, '').substring(0, 60);
 }
 
+// Short, filesystem-safe site identifier for export filenames — e.g.
+// "https://tenant.sharepoint.com/sites/IR_BD" -> "IR_BD". Without this, every
+// Storage Report export was named identically regardless of which site it
+// came from, so telling two exports apart (or which site a downloaded file
+// was even for) meant opening it. Falls back to the full URL, sanitized, if
+// it isn't a parseable absolute URL — same fallback StorageReportView's own
+// siteLabel() uses, for the same reason: a raw string beats nothing.
+function siteNameForFilename(siteUrl: string): string {
+  try {
+    const path = new URL(siteUrl).pathname.replace(/\/+$/, '');
+    const segments = path.split('/').filter(Boolean);
+    return sanitize(segments[segments.length - 1] || 'Site') || 'Site';
+  } catch {
+    return sanitize(siteUrl) || 'Site';
+  }
+}
+
 function downloadBlob(blob: Blob, filename: string): void {
   const url = URL.createObjectURL(blob);
   const link = document.createElement('a');
@@ -91,13 +108,13 @@ export class ExcelExportService {
     const Excel = await loadExcelJS();
     const wb = new Excel.Workbook();
     this.addSummarySheet(wb, summary, siteUrl, entries.length);
-    this.addDetailsSheet(wb, entries);
+    this.addDetailsSheet(wb, entries, !!summary.versionHistoryIncluded);
 
     const buffer = await wb.xlsx.writeBuffer();
     const blob = new Blob([buffer as ArrayBuffer], {
       type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
     });
-    downloadBlob(blob, `SP_StorageReport_${timestampSuffix()}.xlsx`);
+    downloadBlob(blob, `SP_StorageReport_${siteNameForFilename(siteUrl)}_${timestampSuffix()}.xlsx`);
   }
 
   private addSummarySheet(
@@ -122,6 +139,13 @@ export class ExcelExportService {
       ['Stale size', formatBytes(summary.staleSizeBytes)],
       ['Very stale files (strong archival candidates)', summary.veryStaleCount],
       ['Very stale size', formatBytes(summary.veryStaleSizeBytes)],
+      // Additive to Total size, not a subset of it — see the in-app info
+      // tooltip on this same figure (StorageReportView). Only added when the
+      // scan actually measured it; totalVersionSizeBytes === 0 is otherwise
+      // ambiguous between "no old versions exist" and "wasn't measured".
+      ...(summary.versionHistoryIncluded
+        ? ([['Version History Size (additive to Total size)', formatBytes(summary.totalVersionSizeBytes ?? 0)]] as [string, string][])
+        : []),
     ];
 
     data.forEach(([label, value], i) => {
@@ -136,10 +160,15 @@ export class ExcelExportService {
     ws.getColumn(2).width = 50;
   }
 
-  private addDetailsSheet(wb: ExcelJS.Workbook, entries: FileEntry[]): void {
+  private addDetailsSheet(wb: ExcelJS.Workbook, entries: FileEntry[], includeVersionHistory: boolean): void {
     const ws = wb.addWorksheet('Files');
 
-    const headers = ['Library', 'Path', 'Name', 'Size', 'Size (bytes)', 'Created', 'Modified', 'Age (days)', 'Author', 'Tier'];
+    // Version history column only added when the scan actually measured it —
+    // otherwise every entry's versionSizeBytes is undefined and the column
+    // would just be blank, misleadingly implying "confirmed zero".
+    const headers = ['Library', 'Path', 'Name', 'Size', 'Size (bytes)'];
+    if (includeVersionHistory) headers.push('Version History Size', 'Version History Size (bytes)', 'Version Count');
+    headers.push('Created', 'Modified', 'Age (days)', 'Author', 'Tier');
     const headerRow = ws.getRow(1);
     headers.forEach((h, i) => {
       const cell = headerRow.getCell(i + 1);
@@ -153,17 +182,23 @@ export class ExcelExportService {
 
     entries.forEach((entry, idx) => {
       const row = ws.getRow(idx + 2);
-      row.getCell(1).value = entry.libraryTitle;
-      row.getCell(2).value = entry.serverRelativeUrl;
-      row.getCell(3).value = entry.name;
-      row.getCell(4).value = formatBytes(entry.sizeBytes);
-      row.getCell(5).value = entry.sizeBytes;
-      setExcelDate(row.getCell(6), entry.timeCreated);
-      setExcelDate(row.getCell(7), entry.timeLastModified);
-      row.getCell(8).value = entry.ageDays;
-      row.getCell(9).value = entry.authorDisplayName ?? '';
+      let col = 1;
+      row.getCell(col++).value = entry.libraryTitle;
+      row.getCell(col++).value = entry.serverRelativeUrl;
+      row.getCell(col++).value = entry.name;
+      row.getCell(col++).value = formatBytes(entry.sizeBytes);
+      row.getCell(col++).value = entry.sizeBytes;
+      if (includeVersionHistory) {
+        row.getCell(col++).value = entry.versionSizeBytes != null ? formatBytes(entry.versionSizeBytes) : '';
+        row.getCell(col++).value = entry.versionSizeBytes ?? '';
+        row.getCell(col++).value = entry.versionCount ?? '';
+      }
+      setExcelDate(row.getCell(col++), entry.timeCreated);
+      setExcelDate(row.getCell(col++), entry.timeLastModified);
+      row.getCell(col++).value = entry.ageDays;
+      row.getCell(col++).value = entry.authorDisplayName ?? '';
 
-      const tierCell = row.getCell(10);
+      const tierCell = row.getCell(col++);
       tierCell.value = entry.tier;
       tierCell.fill = argbFill(TIER_FILL[entry.tier]);
       tierCell.alignment = { horizontal: 'center', vertical: 'middle' };
@@ -171,17 +206,12 @@ export class ExcelExportService {
       row.commit();
     });
 
-    ws.getColumn(1).width = 24;
-    ws.getColumn(2).width = 60;
-    ws.getColumn(3).width = 30;
-    ws.getColumn(4).width = 12;
-    ws.getColumn(5).width = 14;
-    ws.getColumn(6).width = 14;
-    ws.getColumn(7).width = 14;
-    ws.getColumn(8).width = 12;
-    ws.getColumn(9).width = 24;
-    ws.getColumn(10).width = 12;
-    ws.autoFilter = { from: 'A1', to: 'J1' };
+    const widths = [24, 60, 30, 12, 14];
+    if (includeVersionHistory) widths.push(14, 16, 12);
+    widths.push(14, 14, 12, 24, 12);
+    widths.forEach((w, i) => { ws.getColumn(i + 1).width = w; });
+    const lastCol = String.fromCharCode('A'.charCodeAt(0) + headers.length - 1);
+    ws.autoFilter = { from: 'A1', to: `${lastCol}1` };
   }
 
   // ── CSV export ────────────────────────────────────────────────────────────
@@ -210,29 +240,25 @@ export class ExcelExportService {
     downloadBlob(blob, filename);
   }
 
-  exportCsv(entries: FileEntry[]): void {
-    const rows: string[][] = [
-      ['Library', 'Path', 'Name', 'Size (bytes)', 'Created', 'Modified', 'Age (days)', 'Author', 'Tier'],
-    ];
+  exportCsv(entries: FileEntry[], includeVersionHistory = false, siteUrl = ''): void {
+    const header = ['Library', 'Path', 'Name', 'Size (bytes)'];
+    if (includeVersionHistory) header.push('Version History Size (bytes)', 'Version Count');
+    header.push('Created', 'Modified', 'Age (days)', 'Author', 'Tier');
+    const rows: string[][] = [header];
     for (const e of entries) {
-      rows.push([
-        e.libraryTitle,
-        e.serverRelativeUrl,
-        e.name,
-        String(e.sizeBytes),
-        isoDate(e.timeCreated),
-        isoDate(e.timeLastModified),
-        String(e.ageDays),
-        e.authorDisplayName ?? '',
-        e.tier,
-      ]);
+      const row = [e.libraryTitle, e.serverRelativeUrl, e.name, String(e.sizeBytes)];
+      if (includeVersionHistory) {
+        row.push(e.versionSizeBytes != null ? String(e.versionSizeBytes) : '', e.versionCount != null ? String(e.versionCount) : '');
+      }
+      row.push(isoDate(e.timeCreated), isoDate(e.timeLastModified), String(e.ageDays), e.authorDisplayName ?? '', e.tier);
+      rows.push(row);
     }
-    this.downloadCsv(rows, `SP_StorageReport_${timestampSuffix()}.csv`);
+    this.downloadCsv(rows, `SP_StorageReport_${siteNameForFilename(siteUrl)}_${timestampSuffix()}.csv`);
   }
 
   // ── Explorer List View export ───────────────────────────────────────────────
 
-  async exportFolderListing(rows: FolderListRow[], contextLabel: string): Promise<void> {
+  async exportFolderListing(rows: FolderListRow[], contextLabel: string, includeVersionHistory = false): Promise<void> {
     const Excel = await loadExcelJS();
     const wb = new Excel.Workbook();
     const ws = wb.addWorksheet('Listing');
@@ -241,7 +267,12 @@ export class ExcelExportService {
     title.value = `Folder Listing — ${contextLabel}`;
     title.font = { bold: true, size: 14, color: { argb: COLOR.titleFont } };
 
-    const headers = ['Type', 'Name', 'Size', 'Size (bytes)', 'Items', 'Modified', 'Age (days)', 'Author', 'Status'];
+    // Folders never get a real value here (no recursive version-history
+    // rollup exists — see FolderListRow.versionSizeBytes) and render blank,
+    // same as the in-app List view's '—'.
+    const headers = ['Type', 'Name', 'Size', 'Size (bytes)'];
+    if (includeVersionHistory) headers.push('Version History Size', 'Version History Size (bytes)', 'Version Count');
+    headers.push('Items', 'Modified', 'Age (days)', 'Author', 'Status');
     const headerRow = ws.getRow(3);
     headers.forEach((h, i) => {
       const cell = headerRow.getCell(i + 1);
@@ -255,16 +286,24 @@ export class ExcelExportService {
 
     rows.forEach((r, idx) => {
       const row = ws.getRow(idx + 4);
-      row.getCell(1).value = r.kind === 'folder' ? 'Folder' : 'File';
-      row.getCell(2).value = r.name;
-      row.getCell(3).value = formatBytes(r.sizeBytes);
-      row.getCell(4).value = r.sizeBytes;
-      row.getCell(5).value = r.itemCount ?? '';
-      if (r.lastModified) setExcelDate(row.getCell(6), r.lastModified); else row.getCell(6).value = '';
-      row.getCell(7).value = r.ageDays ?? '';
-      row.getCell(8).value = r.authorDisplayName ?? '';
+      let col = 1;
+      row.getCell(col++).value = r.kind === 'folder' ? 'Folder' : 'File';
+      row.getCell(col++).value = r.name;
+      row.getCell(col++).value = formatBytes(r.sizeBytes);
+      row.getCell(col++).value = r.sizeBytes;
+      if (includeVersionHistory) {
+        const hasVersion = r.kind === 'file' && r.versionSizeBytes != null;
+        row.getCell(col++).value = hasVersion ? formatBytes(r.versionSizeBytes!) : '';
+        row.getCell(col++).value = hasVersion ? r.versionSizeBytes! : '';
+        row.getCell(col++).value = r.kind === 'file' && r.versionCount != null ? r.versionCount : '';
+      }
+      row.getCell(col++).value = r.itemCount ?? '';
+      const modifiedCell = row.getCell(col++);
+      if (r.lastModified) setExcelDate(modifiedCell, r.lastModified); else modifiedCell.value = '';
+      row.getCell(col++).value = r.ageDays ?? '';
+      row.getCell(col++).value = r.authorDisplayName ?? '';
       if (r.kind === 'file' && r.tier) {
-        const tierCell = row.getCell(9);
+        const tierCell = row.getCell(col++);
         tierCell.value = r.tier;
         tierCell.fill = argbFill(TIER_FILL[r.tier]);
         tierCell.alignment = { horizontal: 'center', vertical: 'middle' };
@@ -272,16 +311,12 @@ export class ExcelExportService {
       row.commit();
     });
 
-    ws.getColumn(1).width = 10;
-    ws.getColumn(2).width = 34;
-    ws.getColumn(3).width = 12;
-    ws.getColumn(4).width = 14;
-    ws.getColumn(5).width = 10;
-    ws.getColumn(6).width = 14;
-    ws.getColumn(7).width = 12;
-    ws.getColumn(8).width = 24;
-    ws.getColumn(9).width = 12;
-    ws.autoFilter = { from: 'A3', to: 'I3' };
+    const widths = [10, 34, 12, 14];
+    if (includeVersionHistory) widths.push(14, 16, 12);
+    widths.push(10, 14, 12, 24, 12);
+    widths.forEach((w, i) => { ws.getColumn(i + 1).width = w; });
+    const lastCol = String.fromCharCode('A'.charCodeAt(0) + headers.length - 1);
+    ws.autoFilter = { from: 'A3', to: `${lastCol}3` };
 
     const buffer = await wb.xlsx.writeBuffer();
     const blob = new Blob([buffer as ArrayBuffer], {
@@ -290,21 +325,27 @@ export class ExcelExportService {
     downloadBlob(blob, `SP_FolderListing_${sanitize(contextLabel)}_${timestampSuffix()}.xlsx`);
   }
 
-  exportFolderListingCsv(rows: FolderListRow[], contextLabel: string): void {
-    const out: string[][] = [
-      ['Type', 'Name', 'Size (bytes)', 'Items', 'Modified', 'Age (days)', 'Author', 'Status'],
-    ];
+  exportFolderListingCsv(rows: FolderListRow[], contextLabel: string, includeVersionHistory = false): void {
+    const header = ['Type', 'Name', 'Size (bytes)'];
+    if (includeVersionHistory) header.push('Version History Size (bytes)', 'Version Count');
+    header.push('Items', 'Modified', 'Age (days)', 'Author', 'Status');
+    const out: string[][] = [header];
     for (const r of rows) {
-      out.push([
-        r.kind === 'folder' ? 'Folder' : 'File',
-        r.name,
-        String(r.sizeBytes),
+      const row = [r.kind === 'folder' ? 'Folder' : 'File', r.name, String(r.sizeBytes)];
+      if (includeVersionHistory) {
+        row.push(
+          r.kind === 'file' && r.versionSizeBytes != null ? String(r.versionSizeBytes) : '',
+          r.kind === 'file' && r.versionCount != null ? String(r.versionCount) : '',
+        );
+      }
+      row.push(
         r.itemCount != null ? String(r.itemCount) : '',
         r.lastModified ? isoDate(r.lastModified) : '',
         r.ageDays != null ? String(r.ageDays) : '',
         r.authorDisplayName ?? '',
         r.tier ?? '',
-      ]);
+      );
+      out.push(row);
     }
     this.downloadCsv(out, `SP_FolderListing_${sanitize(contextLabel)}_${timestampSuffix()}.csv`);
   }

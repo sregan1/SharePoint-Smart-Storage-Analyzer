@@ -2,20 +2,25 @@ import { SpApiClient, folderApi, odata, SYSTEM_FOLDER_NAMES, TaskQueue } from '.
 import { FolderStorageNode } from '../../models/models';
 import { getCachedFolderChildren, setCachedFolderChildren } from './folderSizeCache';
 
-// Sums SP.FileVersion.Size across a file's retained old versions — same
-// shape as fileWalk.ts's fetchVersionSizeBytes, kept local here since
-// ExplorerView only ever needs it for one folder's immediate files at a
-// time (no shared walk-level queue to plug into).
-async function fetchVersionSizeBytes(
+// Sums SP.FileVersion.Size across a file's retained old versions, and counts
+// them — the /Versions collection excludes the current version, so the count
+// is free from the same call that already fetches size. Same shape as
+// fileWalk.ts's fetchVersionInfo, kept local here since ExplorerView only
+// ever needs it for one folder's immediate files at a time (no shared
+// walk-level queue to plug into).
+async function fetchVersionInfo(
   client: SpApiClient,
   siteUrl: string,
   fileServerRelativeUrl: string,
-): Promise<number> {
+): Promise<{ sizeBytes: number; count: number }> {
   const url = `${siteUrl}/_api/web/GetFileByServerRelativePath(decodedUrl='${encodeURIComponent(
     odata(fileServerRelativeUrl),
   )}')/Versions?$select=Size`;
   const versions = await client.getJsonPaged(url);
-  return versions.reduce((sum, v) => sum + Number(v.Size ?? 0), 0);
+  return {
+    sizeBytes: versions.reduce((sum, v) => sum + Number(v.Size ?? 0), 0),
+    count: versions.length,
+  };
 }
 
 interface RawMetrics {
@@ -29,6 +34,65 @@ interface RawMetrics {
   // StorageMetrics-sourced result (that path either succeeds or is treated
   // as unavailable, with no partial/uncertain state).
   errored?: boolean;
+  // The first failure encountered in this folder's subtree. Preserved rather
+  // than discarded so callers can report the real cause instead of guessing.
+  errorMessage?: string;
+  // Set when the walk hit its folder budget and stopped descending, so the
+  // total is a genuine floor ("at least this much") rather than exact.
+  truncated?: boolean;
+}
+
+// Bounds how many folder listings ONE getFolderChildren/getLibraryRollups
+// call may issue across all of its fallback walks combined.
+//
+// Without this, the Explorer would fully recurse a subtree per immediate child
+// whose StorageMetrics rollup reads 0 — and on a real archive that is
+// catastrophic: a single folder-open on this tenant walked three subtrees more
+// than seven levels deep, tens of thousands of listings, until SharePoint
+// blocked the account outright and every folder came back unmeasurable. An
+// interactive view only needs its immediate children's sizes; spending
+// unbounded requests to make those exact is the wrong trade every time.
+//
+// The count alone used to BE the bound, fixed at 400 regardless of tenant
+// speed. That's really a wall-clock limit wearing a request-count costume:
+// the walk advances roughly `scanConcurrency` folder-visits per network
+// round-trip, so the same 400 costs ~10s on a fast tenant but multiple
+// minutes on one that's actively throttling (each throttle event can gate
+// every request for up to 60s — see SpApiClient's shared circuit breaker in
+// spCore.ts). So the deadline below is now the PRIMARY bound — it's what
+// actually keeps one user action's wait time predictable — and the count is
+// a backstop tuned to how hard the user has told the app it can push this
+// tenant (scanConcurrency), not a fixed guess.
+//
+// Both are shared across the whole call (not per child/library) because
+// that's what actually bounds the cost of one user action.
+export const FALLBACK_FOLDERS_PER_CONCURRENCY = 150;
+export const MIN_FALLBACK_FOLDERS = 300;
+export const MAX_FALLBACK_FOLDERS = 2400;
+export const FALLBACK_WALK_DEADLINE_MS = 45_000;
+export const LIBRARY_ROLLUP_WALK_DEADLINE_MS = 20_000;
+// The retry pass (see getFolderChildren) runs serially, one folder at a time,
+// only after the user has already waited out the entire first pass — it must
+// not be allowed to run long by itself on top of that.
+export const RETRY_WALK_DEADLINE_MS = 15_000;
+
+export interface WalkBudget {
+  remaining: number;
+  deadlineAtMs: number;
+  truncated: boolean;
+}
+
+// Single source of truth for creating a budget, so the several creation
+// sites (getShallowEstimate's own default, getFolderChildren,
+// getLibraryRollups, the retry pass) can't drift out of sync with each
+// other or with client.scanConcurrency.
+export function newWalkBudget(client: SpApiClient, deadlineMs: number): WalkBudget {
+  const perConcurrency = client.scanConcurrency * FALLBACK_FOLDERS_PER_CONCURRENCY;
+  return {
+    remaining: Math.min(MAX_FALLBACK_FOLDERS, Math.max(MIN_FALLBACK_FOLDERS, perConcurrency)),
+    deadlineAtMs: Date.now() + deadlineMs,
+    truncated: false,
+  };
 }
 
 // GetFolderByServerRelativePath(...)/StorageMetrics is the classic, still-
@@ -80,6 +144,8 @@ interface WalkNode {
   // with the Explorer confidently rendering the folder as empty rather than
   // unreadable.
   errored?: boolean;
+  errorMessage?: string;
+  truncated?: boolean;
 }
 
 // Recursively walks one folder's subtree on a caller-supplied TaskQueue.
@@ -105,8 +171,22 @@ function walkFolderSubtree(
   node: WalkNode,
   queue: TaskQueue,
   onRootDone: (acc: RawMetrics) => void,
+  budget: WalkBudget,
 ): void {
   queue.add(async () => {
+    // Budget is consumed on ENTRY (one listing pair per folder visited), and
+    // checked before descending further — so an exhausted budget stops the
+    // walk cleanly with a partial-but-honest total rather than aborting it.
+    // The deadline is the primary bound (see FALLBACK_WALK_DEADLINE_MS) —
+    // it's what actually keeps one user action's wait time predictable
+    // regardless of tenant speed; the folder count is a backstop.
+    if (budget.remaining <= 0 || Date.now() >= budget.deadlineAtMs) {
+      budget.truncated = true;
+      node.truncated = true;
+      finishNode(siteUrl, node, onRootDone);
+      return;
+    }
+    budget.remaining--;
     try {
       const [filesData, foldersData] = await Promise.all([
         client.getJsonPaged(`${folderApi(siteUrl, node.url)}/Files?$select=Length,TimeLastModified&$top=5000`),
@@ -137,13 +217,20 @@ function walkFolderSubtree(
           pendingChildren: 0,
           childNodes: [],
         };
-        walkFolderSubtree(client, siteUrl, child, queue, onRootDone);
+        walkFolderSubtree(client, siteUrl, child, queue, onRootDone, budget);
       }
-    } catch {
+    } catch (err: any) {
       // Inaccessible subtree — this node keeps whatever partial total it
       // had (usually 0) and still finishes/caches normally so its parent
       // isn't left waiting forever on a branch that will never resolve.
+      //
+      // The error itself used to be dropped on the floor (a bare `catch {}`),
+      // which meant the UI could only guess at the cause and told everyone to
+      // lower their concurrency regardless of whether throttling was involved.
       node.errored = true;
+      node.errorMessage = err?.message ?? String(err);
+      // eslint-disable-next-line no-console
+      console.warn(`[SmartStorageAnalyzer] Could not measure ${node.url}: ${node.errorMessage}`);
       finishNode(siteUrl, node, onRootDone);
     }
   });
@@ -164,7 +251,12 @@ function finishNode(siteUrl: string, node: WalkNode, onRootDone: (acc: RawMetric
     // node.errored lives on the WalkNode, not the RawMetrics acc handed back
     // to the caller — fold it in here so getShallowEstimate's caller can
     // tell "genuinely empty" apart from "the walk gave up partway through."
-    onRootDone({ ...node.acc, errored: node.errored });
+    onRootDone({
+      ...node.acc,
+      errored: node.errored,
+      errorMessage: node.errorMessage,
+      truncated: node.truncated,
+    });
     return;
   }
   parent.acc.totalSizeBytes += node.acc.totalSizeBytes;
@@ -175,7 +267,16 @@ function finishNode(siteUrl: string, node: WalkNode, onRootDone: (acc: RawMetric
   // Propagate so an ancestor of a failed branch is not cached either — its
   // own childNodes list would otherwise look complete while one entry's
   // total silently reflects only a partial subtree.
-  if (node.errored) parent.errored = true;
+  if (node.errored) {
+    parent.errored = true;
+    // Keep the first cause seen rather than the last — the earliest failure in
+    // a subtree is usually the root cause, later ones its knock-on effects.
+    parent.errorMessage = parent.errorMessage ?? node.errorMessage;
+  }
+  // An ancestor of a truncated branch is itself only a floor, and must not be
+  // cached as an exact figure either (see the !node.errored cache guard above,
+  // which this deliberately mirrors).
+  if (node.truncated) parent.truncated = true;
   parent.childNodes.push({
     name: node.name,
     serverRelativeUrl: node.url,
@@ -183,6 +284,7 @@ function finishNode(siteUrl: string, node: WalkNode, onRootDone: (acc: RawMetric
     fileCount: node.acc.fileCount,
     lastModified: node.acc.lastModified ?? node.timeLastModified,
     sizeSource: 'estimate',
+    sizeApproximate: node.truncated,
     children: [],
     hasChildren: true,
   });
@@ -193,7 +295,7 @@ function finishNode(siteUrl: string, node: WalkNode, onRootDone: (acc: RawMetric
 // Live recursive rollup used when StorageMetrics is unavailable or reports
 // zero for a folder that may have content. Accepts an optional shared
 // TaskQueue so a caller resolving many folders at once (getFolderChildren,
-// getLibrariesWithStats) can run every fallback walk through ONE bounded
+// getLibraryRollups) can run every fallback walk through ONE bounded
 // pool instead of each call opening its own — nesting bounded pools inside
 // an already-bounded outer loop multiplies concurrency (outer limit ×
 // inner limit) instead of capping it, which is what was driving requests
@@ -205,8 +307,14 @@ export async function getShallowEstimate(
   siteUrl: string,
   serverRelativeUrl: string,
   sharedQueue?: TaskQueue,
+  sharedBudget?: WalkBudget,
 ): Promise<RawMetrics> {
   const queue = sharedQueue ?? new TaskQueue(client.scanConcurrency);
+  // A caller that resolves several folders at once passes ONE budget so the
+  // ceiling applies to the whole user action rather than per folder. No
+  // caller currently omits sharedBudget for a multi-folder resolution, but
+  // this default keeps a lone standalone call self-bounded regardless.
+  const budget = sharedBudget ?? newWalkBudget(client, FALLBACK_WALK_DEADLINE_MS);
   const root: WalkNode = {
     url: serverRelativeUrl,
     name: '',
@@ -215,7 +323,7 @@ export async function getShallowEstimate(
     childNodes: [],
   };
   return new Promise<RawMetrics>((resolve) => {
-    walkFolderSubtree(client, siteUrl, root, queue, resolve);
+    walkFolderSubtree(client, siteUrl, root, queue, resolve, budget);
   });
 }
 
@@ -258,35 +366,66 @@ export async function getFolderChildren(
   // top of the runConcurrent pool already bounding this loop, multiplying
   // concurrency instead of capping it (see getShallowEstimate).
   const fallbackQueue = new TaskQueue(client.scanConcurrency);
+  // One budget for every fallback walk this call triggers — see
+  // FALLBACK_WALK_DEADLINE_MS for why an unbounded walk per child is untenable.
+  const fallbackBudget = newWalkBudget(client, FALLBACK_WALK_DEADLINE_MS);
 
   let done = 0;
   const tasks = rawFolders.map((f: any) => async () => {
+    // ItemCount from the folder listing already answers "is this folder
+    // completely empty?" (it counts files AND subfolders), so a genuinely
+    // empty folder needs no probe and no walk at all. This used to fall
+    // through to a full walk to establish a result we already had — pure
+    // request volume spent confirming zero, once per empty folder, and every
+    // one of those requests was another chance to get throttled.
+    if (Number(f.ItemCount ?? -1) === 0) {
+      const emptyNode: FolderStorageNode = {
+        name: f.Name,
+        serverRelativeUrl: f.ServerRelativeUrl,
+        totalSizeBytes: 0,
+        fileCount: 0,
+        lastModified: f.TimeLastModified,
+        sizeSource: 'estimate',
+        children: [],
+        hasChildren: false,
+      };
+      done++;
+      onProgress?.(done, total, emptyNode);
+      return emptyNode;
+    }
+
     const metrics = await getStorageMetrics(client, siteUrl, f.ServerRelativeUrl);
     // Trust StorageMetrics only when it reports actual content. Its rollup
     // is computed by a periodic background job that lags behind recent
     // activity, so "0 bytes" for a folder that really has files is common —
     // and indistinguishable from a genuinely empty folder without checking.
     // When it says 0 (or is unavailable), settle it with a live walk using
-    // the same Files/Folders calls the Storage Report scan relies on; for
-    // truly empty folders that walk is only a couple of cheap requests.
+    // the same Files/Folders calls the Storage Report scan relies on.
     const useMetrics = !!metrics && metrics.totalSizeBytes > 0;
-    const resolved = useMetrics ? metrics! : await getShallowEstimate(client, siteUrl, f.ServerRelativeUrl, fallbackQueue);
+    const resolved = useMetrics
+      ? metrics!
+      : await getShallowEstimate(client, siteUrl, f.ServerRelativeUrl, fallbackQueue, fallbackBudget);
     // resolved.errored means the live walk gave up partway through (throttling
     // exhausted, a transient error) — its totals are whatever partial amount
     // it had at that point, NOT a confirmed result, and must be presented as
     // such rather than silently rendered as a genuinely empty folder.
-    const sizeUnknown = !useMetrics && !!resolved.errored;
+    //
+    // A truncated walk with a ZERO total is a distinct third case: the shared
+    // budget/deadline (see fallbackBudget above) was already exhausted by
+    // OTHER children in this same batch before this folder's own walk got to
+    // list anything at all — not "measured and found empty", but "never
+    // looked at". Left as an approximate 0, this folder would render as
+    // "≥ 0 B", sort to the bottom of the list, and paint as a near-invisible
+    // treemap square — presenting a folder nobody looked at as confirmed
+    // near-empty, exactly the failure mode sizeUnknown exists to prevent.
+    const neverMeasured = !useMetrics && !!resolved.truncated
+      && resolved.totalSizeBytes === 0 && resolved.fileCount === 0;
+    const sizeUnknown = !useMetrics && (!!resolved.errored || neverMeasured);
     if (!useMetrics && !sizeUnknown && resolved.totalSizeBytes === 0 && resolved.fileCount === 0) {
       // eslint-disable-next-line no-console
       console.debug(
         `[SmartStorageAnalyzer] ${f.ServerRelativeUrl}: StorageMetrics ${metrics ? 'reported 0 bytes' : 'unavailable'}` +
         ' and live walk found no files — treating as empty.',
-      );
-    } else if (sizeUnknown) {
-      // eslint-disable-next-line no-console
-      console.warn(
-        `[SmartStorageAnalyzer] ${f.ServerRelativeUrl}: could not determine size (throttled or an error occurred) — ` +
-        'showing as unknown rather than empty.',
       );
     }
     const node: FolderStorageNode = {
@@ -295,7 +434,15 @@ export async function getFolderChildren(
       totalSizeBytes: resolved.totalSizeBytes,
       fileCount: resolved.fileCount,
       lastModified: resolved.lastModified ?? f.TimeLastModified,
-      sizeSource: useMetrics ? 'storageMetrics' : (sizeUnknown ? 'error' : 'estimate'), // 'estimate' here is a live walk, still exact for readable subtrees
+      sizeSource: useMetrics ? 'storageMetrics' : (sizeUnknown ? 'error' : 'estimate'), // 'estimate' here is a live walk, exact unless truncated below
+      sizeErrorMessage: sizeUnknown
+        ? (resolved.errorMessage
+          ?? "Not measured — this view's measurement budget was used up by other folders. Open this folder directly to measure it.")
+        : undefined,
+      // sizeUnknown already covers the neverMeasured case (a real 0, not an
+      // approximate one) — only mark approximate when there's an actual
+      // nonzero partial total to be a floor for.
+      sizeApproximate: !useMetrics && !sizeUnknown && !!resolved.truncated,
       children: [],
       hasChildren: true, // resolved lazily on next expand; harmless if it turns out empty
     };
@@ -313,7 +460,50 @@ export async function getFolderChildren(
   // in-flight ceiling across every pool and shrinks it while throttled, so
   // asking for extra here buys nothing and only deepens the queue.
   const results = await client.runConcurrent(tasks, client.scanConcurrency);
-  const nodes = results.filter((n): n is FolderStorageNode => !!n).sort((a, b) => b.totalSizeBytes - a.totalSizeBytes);
+  const nodes = results.filter((n): n is FolderStorageNode => !!n);
+
+  // Second pass for anything that couldn't be measured, walked ONE AT A TIME.
+  // Most first-pass failures are throttling or transient, and by the time the
+  // first pass has finished the shared throttle gate has usually cleared and
+  // the tenant is no longer shedding load — so a single serial retry recovers
+  // the majority of them. Serial specifically: retrying these concurrently is
+  // what caused them to fail in the first place, and there are only ever a
+  // handful, so the cost is small and bounded.
+  const failed = nodes.filter((n) => n.sizeSource === 'error');
+  if (failed.length > 0) {
+    // eslint-disable-next-line no-console
+    console.warn(`[SmartStorageAnalyzer] Retrying ${failed.length} unmeasured folder(s) one at a time…`);
+    const retryQueue = new TaskQueue(1);
+    // One shared budget for the WHOLE retry pass, not a fresh one per folder —
+    // this only runs after the user already waited out the entire first pass,
+    // so it gets a short, single window (RETRY_WALK_DEADLINE_MS) rather than
+    // potentially failed.length independent 45s windows stacked serially.
+    const retryBudget = newWalkBudget(client, RETRY_WALK_DEADLINE_MS);
+    for (const node of failed) {
+      const retry = await getShallowEstimate(client, siteUrl, node.serverRelativeUrl, retryQueue, retryBudget);
+      if (retry.errored) {
+        node.sizeErrorMessage = retry.errorMessage ?? node.sizeErrorMessage;
+        continue;
+      }
+      node.totalSizeBytes = retry.totalSizeBytes;
+      node.fileCount = retry.fileCount;
+      node.lastModified = retry.lastModified ?? node.lastModified;
+      node.sizeSource = 'estimate';
+      node.sizeErrorMessage = undefined;
+      // The shared retry budget/deadline can itself run out partway through
+      // the retry pass (new in this pass — previously the retry had no budget
+      // at all) — a truncated retry result is a real floor, not confirmed
+      // exact, and must carry that forward the same as the first pass does.
+      node.sizeApproximate = !!retry.truncated;
+    }
+    const stillFailed = nodes.filter((n) => n.sizeSource === 'error').length;
+    // eslint-disable-next-line no-console
+    console.warn(
+      `[SmartStorageAnalyzer] Retry recovered ${failed.length - stillFailed} of ${failed.length} folder(s).`,
+    );
+  }
+
+  nodes.sort((a, b) => b.totalSizeBytes - a.totalSizeBytes);
   // Same reasoning as the internal walk's own per-node cache guard: caching a
   // batch containing an 'error' (uncertain-size) child would keep showing it
   // as unknown for the cache's full TTL even once throttling has cleared up.
@@ -333,7 +523,7 @@ export async function getFolderFiles(
   siteUrl: string,
   serverRelativeUrl: string,
   includeVersionHistory = false,
-): Promise<{ name: string; serverRelativeUrl: string; sizeBytes: number; timeCreated: string; timeLastModified: string; authorLoginName?: string; authorDisplayName?: string; versionSizeBytes?: number }[]> {
+): Promise<{ name: string; serverRelativeUrl: string; sizeBytes: number; timeCreated: string; timeLastModified: string; authorLoginName?: string; authorDisplayName?: string; versionSizeBytes?: number; versionCount?: number }[]> {
   const files = await client.getJsonPaged(
     `${folderApi(siteUrl, serverRelativeUrl)}/Files?$select=Name,ServerRelativeUrl,Length,TimeCreated,TimeLastModified,Author/Title,Author/LoginName&$expand=Author&$top=5000`,
   );
@@ -346,6 +536,7 @@ export async function getFolderFiles(
     authorLoginName: f.Author?.LoginName,
     authorDisplayName: f.Author?.Title,
     versionSizeBytes: undefined as number | undefined,
+    versionCount: undefined as number | undefined,
   }));
 
   if (includeVersionHistory && rows.length > 0) {
@@ -355,9 +546,12 @@ export async function getFolderFiles(
     await client.runConcurrent(
       rows.map((row) => async () => {
         try {
-          row.versionSizeBytes = await fetchVersionSizeBytes(client, siteUrl, row.serverRelativeUrl);
+          const info = await fetchVersionInfo(client, siteUrl, row.serverRelativeUrl);
+          row.versionSizeBytes = info.sizeBytes;
+          row.versionCount = info.count;
         } catch {
           row.versionSizeBytes = undefined;
+          row.versionCount = undefined;
         }
       }),
       Math.max(1, Math.floor(client.scanConcurrency / 2)),

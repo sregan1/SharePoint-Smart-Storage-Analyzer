@@ -14,18 +14,21 @@ A free, open-source SPFx web part that helps SharePoint site owners find storage
 
 ### Explorer
 
-Opens directly into a WizTree-style treemap of the site's default document library — no picker screen first.
+Opens into a WizTree-style treemap of every document library on the site, sized by storage — then drills down through folders to individual files.
 
 ![Explorer treemap view showing folders and files sized by storage weight, color-coded by archival status](docs/screenshots/01_explorer_treemap.png)
 
 | Feature | Description |
 |---|---|
-| **Treemap drill-down** | Click any folder square to zoom into it; square size reflects storage weight at a glance |
+| **Site-wide library treemap** | Opening view sizes every library on the site by its storage rollup, answering "which library is the storage in?" before any drill-down. Libraries SharePoint hasn't yet reported a size for render as "Unknown" and are measured exactly on open — deliberately, so the root view costs one probe per library rather than a full site walk |
+| **Treemap drill-down** | Click any library or folder square to zoom into it; square size reflects storage weight at a glance. A folder measured only partially (its walk hit this view's request budget) shows as "≥ &lt;size&gt;" — a floor, not an estimate — distinct from "Unknown" (nothing could be measured) |
+| **"Other" folding** | Folders/libraries beyond the largest ~40 fold into a single "Other (N items)" cell instead of drawing slivers too small to see or click; a note above the treemap offers one click through to the List view, which shows every item individually |
 | **Library switcher** | A button row switches between every document library on the site without leaving the view |
+| **Refresh** | Clears cached folder/library sizes for the current site and re-measures what's on screen, for when content has changed since the last load |
 | **Breadcrumb navigation** | Jump back to any ancestor folder in one click |
 | **List View** | Toggle to a sortable table of the same folder's contents — folders and files together, largest first by default |
-| **Version history size** | Optional per-folder toggle that adds each file's retained-version storage on top of its current size — sized into the Treemap's file squares and shown as its own column in the List View. Folder totals never include it (no recursive rollup exists for it) |
-| **Excel / CSV export** | Export the current List View (name, size, item count, modified date, archival status, version-history size if enabled) to `.xlsx` or `.csv` |
+| **Version history size & count** | Optional per-folder toggle that adds each file's retained-version storage (and how many old versions are retained) on top of its current size — sized into the Treemap's file squares and shown as its own columns in the List View. Folder totals never include it (no recursive rollup exists for it) |
+| **Excel / CSV export** | Export the current List View (name, size, item count, modified date, archival status, version history size and count if enabled) to `.xlsx` or `.csv`; filenames are prefixed with the site name |
 | **Archival status** | Files are tagged Active / Stale / Very stale based on configurable last-modified thresholds, shown in both the treemap and the list |
 
 Both view modes share the same drill-down state — switching from Treemap to List (or vice versa) keeps you in the same folder.
@@ -43,12 +46,12 @@ Scan a site — and optionally its subsites — and export a report of archival 
 | **Configurable scope** | Include subsites and hidden/system libraries in the scan |
 | **Concurrent, throttling-aware scan** | Adjustable request concurrency with a live progress bar, file count, and elapsed timer |
 | **Cancelable scans** | Stop a running scan and still see the partial results collected so far (not saved to history) |
-| **Version history size** | Optional toggle that adds a per-file version-history column and a summary tile for the total across the scan — additive to Total size, not included in it |
-| **Partial-scan reporting** | Folders/subsites that fail to read (permissions, throttling) are called out with a warning, expandable per-item error details, and a copy-to-clipboard action, instead of silently under-reporting |
+| **Version history size & count** | Optional toggle that adds per-file version-history size and count columns and a summary tile for the size total across the scan — additive to Total size, not included in it |
+| **Partial-scan reporting** | Folders/subsites that fail to read (permissions, throttling), and files whose version history specifically couldn't be read, are called out with a warning, expandable per-item error details, and a copy-to-clipboard action, instead of silently under-reporting |
 | **Archival tiering** | Every file is classified Active, Stale, or Very stale based on configurable last-modified thresholds |
 | **In-browser results table** | Sortable results with a toggle to show only archival candidates |
-| **Excel export** | Color-coded `.xlsx` workbook with a Summary sheet and a full file-level Details sheet |
-| **CSV export** | Plain-text alternative for scripted processing |
+| **Excel export** | Color-coded `.xlsx` workbook with a Summary sheet and a full file-level Details sheet; filename prefixed with the site name |
+| **CSV export** | Plain-text alternative for scripted processing; filename prefixed with the site name |
 | **Scan history** | Past scans persist in IndexedDB (10 most recent), with cross-site visibility toggle and an automatic "Partial" badge for oversized reports where only stale-tier rows were retained |
 | **Report compare** | Diff two saved scans to see size change, new archival candidates, and resolved items over time — with a warning if the two scans are from different sites |
 
@@ -136,7 +139,7 @@ To change web part settings, put the page in **Edit** mode, click the web part p
 
 | Setting | Default | Description |
 |---|---|---|
-| **Concurrent API requests** | 6 | How many SharePoint API requests run in parallel during scans and folder loads (1–15). SharePoint's throttling limit is dynamic, not fixed — the app retries automatically on HTTP 429, but very high values can still net out slower |
+| **Concurrent API requests** | 6 | How many SharePoint API requests run in parallel during scans and folder loads (1–15). SharePoint's throttling limit is dynamic, not fixed — the app retries automatically on throttling (HTTP 429/503/406), but very high values can still net out slower. Also sizes how deep the Explorer's fallback folder/library measurement goes before falling back to a "≥" (at least) result |
 
 ---
 
@@ -191,7 +194,7 @@ config/
 
 **"The Storage Report scan takes a very long time"** — Scan time scales with file count and, if enabled, the number of subsites or version-history lookups. Narrow the scope in Settings (disable subsites, hidden libraries, or version history) or lower scan concurrency if you're seeing throttling (HTTP 429) errors.
 
-**"An error mentions HTTP 406"** — SharePoint rejected one specific request, almost always because a folder/file name has a character its REST API dislikes (trailing space/period, certain Unicode, a name starting with `~`) or sits at the end of an unusually long path. `getJson` (`services/sp/spCore.ts`) retries a 406 once automatically before surfacing it; if it persists, the offending item is usually identifiable from the URL now included in the thrown error.
+**"An error mentions HTTP 406"** — this is SharePoint throttling, not a bad request: a 406 occurs when SharePoint redirects an over-limit request to an HTML throttle page instead of the JSON response that was asked for. `spCore.ts` treats 406 identically to 429/503 — it's absorbed by the shared throttle gate and retried with backoff, not surfaced as a per-item error. If it persists, lower **Concurrent API requests** in Settings.
 
 ---
 

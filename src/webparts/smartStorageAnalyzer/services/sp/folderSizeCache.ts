@@ -33,6 +33,29 @@ export function getCachedFolderChildren(siteUrl: string, folderUrl: string): Fol
   }
 }
 
+// Drops every cached folder size for a site (or all sites when omitted).
+//
+// Needed because the TTL alone leaves a user stuck: a folder that came back
+// unmeasurable (throttling) or truncated at the walk budget is otherwise
+// unretryable for up to 10 minutes, and the advice to "try again in a moment"
+// has nothing to act on. Iterating the keys rather than clearing
+// sessionStorage wholesale so unrelated app state on the page survives.
+export function clearCachedFolderChildren(siteUrl?: string): void {
+  try {
+    const prefix = siteUrl ? `${CACHE_PREFIX}${siteUrl}::` : CACHE_PREFIX;
+    // Snapshot the keys first — removing while iterating sessionStorage by
+    // index shifts subsequent indices and silently skips entries.
+    const doomed: string[] = [];
+    for (let i = 0; i < sessionStorage.length; i++) {
+      const key = sessionStorage.key(i);
+      if (key && key.startsWith(prefix)) doomed.push(key);
+    }
+    doomed.forEach((key) => sessionStorage.removeItem(key));
+  } catch {
+    // sessionStorage unavailable (private browsing) — nothing cached to clear.
+  }
+}
+
 export function setCachedFolderChildren(siteUrl: string, folderUrl: string, nodes: FolderStorageNode[]): void {
   try {
     const entry: CacheEntry = { timestamp: Date.now(), nodes };

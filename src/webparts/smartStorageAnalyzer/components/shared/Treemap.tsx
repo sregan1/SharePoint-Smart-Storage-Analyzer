@@ -18,13 +18,25 @@ function cellColor(item: TreemapRect): string {
 }
 
 function cellTooltip(item: TreemapRect): string {
-  if (item.kind === 'other') return `${item.label} — ${formatBytes(item.sizeBytes)}`;
+  // "Other" is a synthetic bucket folding the smallest items beyond
+  // MAX_TREEMAP_CELLS into one cell (see treemapLayout.ts) — it isn't a real
+  // folder or file, so there's nothing to drill into here. The List view has
+  // no such folding (every row is listed individually), so that's where the
+  // folded-in items actually are.
+  if (item.kind === 'other') return `${item.label} — ${formatBytes(item.sizeBytes)} combined. Switch to List view to see these individually.`;
   if (item.kind === 'folder') {
     if (item.sizeUnknown) {
-      return `${item.label} (folder) — size unknown: SharePoint throttling or an error kept this from being measured. Not a confirmed empty folder — try again in a moment.`;
+      // The real error when we have one — guessing at the cause here (it used
+      // to always blame throttling) sends people to fix the wrong thing.
+      return item.sizeErrorMessage
+        ? `${item.label} (folder) — size unknown. ${item.sizeErrorMessage}`
+        : `${item.label} (folder) — size not reported by SharePoint yet. Open it to measure it exactly.`;
     }
     const fileCount = item.itemCount != null ? `, ${item.itemCount} file${item.itemCount === 1 ? '' : 's'}` : '';
-    return `${item.label} (folder) — ${formatBytes(item.sizeBytes)}${fileCount}${item.lastModified ? `, most recent activity ${new Date(item.lastModified).toLocaleDateString()}` : ''}`;
+    const size = item.sizeApproximate
+      ? `at least ${formatBytes(item.sizeBytes)} (measurement stopped at this view's request budget — open the folder to go deeper, or raise Concurrent API requests in Settings to measure deeper before stopping)`
+      : formatBytes(item.sizeBytes);
+    return `${item.label} (folder) — ${size}${fileCount}${item.lastModified ? `, most recent activity ${new Date(item.lastModified).toLocaleDateString()}` : ''}`;
   }
   const ageText = item.lastModified ? formatAge(Math.max(0, Math.floor((Date.now() - new Date(item.lastModified).getTime()) / 86400000))) : '';
   // item.sizeBytes is file + version history combined whenever versionSizeBytes
@@ -136,7 +148,9 @@ export const Treemap: React.FC<TreemapProps> = ({ items, height = 420, onFolderC
                 }}
               >
                 {r.kind === 'folder'
-                  ? (r.sizeUnknown ? 'Size unknown' : `${formatBytes(r.sizeBytes)}${r.itemCount != null ? ` · ${r.itemCount} file${r.itemCount === 1 ? '' : 's'}` : ''}`)
+                  ? (r.sizeUnknown
+                    ? 'Size unknown'
+                    : `${r.sizeApproximate ? '≥ ' : ''}${formatBytes(r.sizeBytes)}${r.itemCount != null ? ` · ${r.itemCount} file${r.itemCount === 1 ? '' : 's'}` : ''}`)
                   : `${formatBytes(r.sizeBytes - (r.versionSizeBytes ?? 0))} + ${formatBytes(r.versionSizeBytes ?? 0)} history`}
               </Text>
             )}
