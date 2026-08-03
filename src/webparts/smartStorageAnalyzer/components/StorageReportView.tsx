@@ -423,7 +423,7 @@ export const StorageReportView: React.FC<StorageReportViewProps> = ({
   return (
     <div className={styles.root}>
       <div className={styles.header}>
-        <Button appearance="subtle" icon={<ArrowLeft24Regular />} onClick={onBack} aria-label="Back to explorer" />
+        <Button appearance="subtle" icon={<ArrowLeft24Regular />} onClick={onBack} aria-label="Back to home" />
         <Title3>Storage Report</Title3>
       </div>
 

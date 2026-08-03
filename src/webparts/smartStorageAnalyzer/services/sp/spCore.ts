@@ -510,9 +510,13 @@ export class SpApiClient {
   }
 
   // Fetches a collection endpoint and follows server-side paging links so
-  // results beyond the $top page size are not silently dropped. maxPages is a
-  // safety valve against runaway loops on enormous collections.
-  public async getJsonPaged(url: string, signal?: AbortSignal, maxPages = 50): Promise<any[]> {
+  // results beyond the $top page size are not silently dropped, reporting
+  // whether it had to give up before the last page. maxPages is a safety
+  // valve against runaway loops on enormous collections — at $top=5000 the
+  // default of 400 covers 2,000,000 items before it ever kicks in, so a real
+  // truncation here means a genuinely enormous single folder, not routine
+  // library size.
+  public async getJsonPagedMeta(url: string, signal?: AbortSignal, maxPages = 400): Promise<{ items: any[]; truncated: boolean }> {
     const all: any[] = [];
     let next: string | undefined = url;
     let page = 0;
@@ -521,11 +525,20 @@ export class SpApiClient {
       all.push(...valueArray(data));
       next = data?.['odata.nextLink'] ?? data?.['@odata.nextLink'] ?? data?.d?.__next;
     }
-    if (next && page >= maxPages) {
+    const truncated = !!next && page >= maxPages;
+    if (truncated) {
       // eslint-disable-next-line no-console
       console.warn(`[SmartStorageAnalyzer] getJsonPaged: stopped after ${maxPages} pages with more results still available — ${url}`);
     }
-    return all;
+    return { items: all, truncated };
+  }
+
+  // Convenience wrapper for the many call sites that don't need to react to
+  // truncation themselves (small/bounded collections like a file's version
+  // history) — see getJsonPagedMeta for callers that must propagate it
+  // (e.g. as sizeApproximate) instead of silently under-counting.
+  public async getJsonPaged(url: string, signal?: AbortSignal, maxPages = 400): Promise<any[]> {
+    return (await this.getJsonPagedMeta(url, signal, maxPages)).items;
   }
 
   public async runConcurrent<T>(

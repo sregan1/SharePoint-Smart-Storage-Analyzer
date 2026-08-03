@@ -4,6 +4,57 @@ All notable changes to this project are documented here.
 
 ---
 
+## [1.3.0] — 2026-08-02
+
+### Added
+
+- **Home screen**
+  The web part now opens on a landing screen with three cards — **Tree
+  View**, **List View**, and **Storage Report** — each with a screenshot and
+  a short description of what it does. Clicking a card opens that tool;
+  every tool now has a **Home** button to return. A site administrator can
+  still configure the web part to skip Home and open directly on any one of
+  the three (or on Home itself) via the property pane's **Default view on
+  open** dropdown, which gained **Home**, **Tree View**, and **List View** as
+  options alongside the existing **Storage Report**.
+
+### Changed
+
+- **The Explorer is now reached as two separate entry points: Tree View and
+  List View**
+  Previously the web part opened directly into a single "Explorer" screen
+  with an internal Treemap/List tab. That screen is unchanged internally —
+  the same tab still switches between Treemap and List without losing your
+  place — but it's now reached via the Home screen's **Tree View** or **List
+  View** card (whichever is clicked decides which tab it opens on), and the
+  header no longer shows "Explorer" / "Storage Report" tab buttons, since
+  navigation moved to Home.
+
+- **More accurate folder/library scans on fast tenants, without sacrificing
+  the throttling protections that made the fallback walk bounded in the
+  first place**
+  The fallback measurement walk (used when SharePoint's `StorageMetrics`
+  rollup is stale or unavailable) previously stopped at a folder-count
+  budget derived from Concurrent API requests (`scanConcurrency * 150`,
+  capped at 2400) — on a fast tenant this budget was often exhausted in a
+  few seconds, well before the 45-second wall-clock deadline that was
+  already meant to be the real limit, cutting a scan short and reporting an
+  approximate "≥" result for no real reason. The wall-clock deadline is now
+  the sole practical bound; the folder count is a much higher safety valve
+  (20,000) that exists only to catch pathological/runaway cases.
+
+- **Folder/file listings that hit SharePoint's own paging limit are no
+  longer silently under-counted**
+  A folder or file listing beyond `getJsonPaged`'s internal page-count
+  safety valve (previously 50 pages / 250,000 items, now 400 pages / 2
+  million items) was truncated with only a console warning — the resulting
+  total was short by whatever fell past the last page, with no indication
+  to the user. This is now surfaced the same way other incomplete
+  measurements are: as `sizeApproximate` in Tree View / List View, and as a
+  counted, detailed skipped-folder entry in the Storage Report.
+
+---
+
 ## [1.2.0] — 2026-07-31
 
 ### Added

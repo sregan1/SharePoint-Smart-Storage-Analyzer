@@ -14,12 +14,23 @@ import { WebPartContext } from '@microsoft/sp-webpart-base';
 
 import { StorageAnalyzerService } from '../services/StorageAnalyzerService';
 import { ExcelExportService } from '../services/ExcelExportService';
+import { HomeView } from './HomeView';
 import { ExplorerView } from './ExplorerView';
 import { StorageReportView } from './StorageReportView';
 import { SettingsView } from './SettingsView';
 import { clampConcurrency, clampStaleDays, clampVeryStaleDays } from '../utils/settingsBounds';
 
-export type AppView = 'explorer' | 'report' | 'settings';
+export type AppView = 'home' | 'tree' | 'list' | 'report' | 'settings';
+
+// Every value this switches on below; anything else (a stale saved value
+// from a AppView union that no longer includes it, e.g. the pre-Home
+// 'explorer') falls back to 'home' in resolveInitialView rather than
+// matching no render branch and leaving the content area blank.
+const KNOWN_VIEWS: AppView[] = ['home', 'tree', 'list', 'report', 'settings'];
+
+function resolveInitialView(defaultView: AppView | undefined): AppView {
+  return defaultView && KNOWN_VIEWS.indexOf(defaultView) !== -1 ? defaultView : 'home';
+}
 
 const LS_CONCURRENCY = 'sp-smart-storage-analyzer-concurrency';
 const LS_HIDDEN = 'sp-smart-storage-analyzer-includeHidden';
@@ -141,8 +152,8 @@ export const App: React.FC<AppProps> = ({ context, sp, excel, defaultView, brand
     [brandColors.primary, brandColors.darkAlt, brandColors.dark, brandColors.darker, brandColors.light, brandColors.lighter],
   );
 
-  const [view, setView] = React.useState<AppView>(defaultView ?? 'explorer');
-  const [prevView, setPrevView] = React.useState<AppView>('explorer');
+  const [view, setView] = React.useState<AppView>(resolveInitialView(defaultView));
+  const [prevView, setPrevView] = React.useState<AppView>('home');
 
   // The web part always analyzes the site it's placed on — no cross-site
   // switching, so this is a plain constant rather than state.
@@ -203,7 +214,7 @@ export const App: React.FC<AppProps> = ({ context, sp, excel, defaultView, brand
     <RendererProvider renderer={renderer} targetDocument={document}>
     <FluentProvider theme={theme} style={{ minHeight: '400px', position: 'relative' }}>
 
-      {view !== 'settings' && (
+      {view !== 'home' && view !== 'settings' && (
         <div
           style={{
             display: 'flex',
@@ -224,35 +235,29 @@ export const App: React.FC<AppProps> = ({ context, sp, excel, defaultView, brand
             </Text>
           </div>
 
-          <div style={{ display: 'flex', alignItems: 'center', gap: tokens.spacingHorizontalS, flexShrink: 0 }}>
-            <Button
-              appearance={view === 'explorer' ? 'primary' : 'transparent'}
-              size="small"
-              style={view === 'explorer' ? undefined : { color: 'white' }}
-              onClick={() => setView('explorer')}
-            >
-              Explorer
-            </Button>
-            <Button
-              appearance={view === 'report' ? 'primary' : 'transparent'}
-              size="small"
-              style={view === 'report' ? undefined : { color: 'white' }}
-              onClick={() => setView('report')}
-            >
-              Storage Report
-            </Button>
-            <Button
-              appearance="transparent"
-              icon={<Settings24Regular style={{ color: 'white' }} />}
-              aria-label="Settings"
-              title="Settings"
-              onClick={handleOpenSettings}
-            />
-          </div>
+          <Button
+            appearance="transparent"
+            icon={<Settings24Regular style={{ color: 'white' }} />}
+            aria-label="Settings"
+            title="Settings"
+            onClick={handleOpenSettings}
+          />
         </div>
       )}
 
-      {view !== 'settings' && canManageWeb === false && (
+      {view === 'home' && (
+        <div style={{ position: 'absolute', top: '4px', right: '8px', zIndex: 10 }}>
+          <Button
+            appearance="transparent"
+            icon={<Settings24Regular />}
+            aria-label="Settings"
+            title="Settings"
+            onClick={handleOpenSettings}
+          />
+        </div>
+      )}
+
+      {view !== 'home' && view !== 'settings' && canManageWeb === false && (
         <div style={{
           display: 'flex',
           alignItems: 'flex-start',
@@ -274,14 +279,23 @@ export const App: React.FC<AppProps> = ({ context, sp, excel, defaultView, brand
         </div>
       )}
 
-      {view === 'explorer' && (
+      {view === 'home' && (
+        <HomeView
+          onNavigate={setView}
+          primaryColor={brandColors.primary}
+          canManageWeb={canManageWeb}
+        />
+      )}
+      {(view === 'tree' || view === 'list') && (
         <ExplorerView
-          key={siteUrl}
+          key={`${siteUrl}-${view}`}
           sp={sp}
           excel={excel}
           siteUrl={siteUrl}
           staleDays={staleDays}
           veryStaleDays={veryStaleDays}
+          initialViewMode={view === 'list' ? 'list' : 'treemap'}
+          onBack={() => setView('home')}
         />
       )}
       {view === 'report' && (
@@ -294,7 +308,7 @@ export const App: React.FC<AppProps> = ({ context, sp, excel, defaultView, brand
           includeHidden={includeHidden}
           staleDays={staleDays}
           veryStaleDays={veryStaleDays}
-          onBack={() => setView('explorer')}
+          onBack={() => setView('home')}
         />
       )}
       {view === 'settings' && (

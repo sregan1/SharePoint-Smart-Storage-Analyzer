@@ -71,16 +71,30 @@ export async function walkLibrary(
       // live fetch.
       if (options.signal?.aborted) return;
       try {
-        const [foldersData, filesData] = await Promise.all([
-          client.getJsonPaged(
+        const [folders, files] = await Promise.all([
+          client.getJsonPagedMeta(
             `${folderApi(siteUrl, serverRelativeUrl)}/Folders?$select=Name,ServerRelativeUrl&$top=5000`,
             options.signal,
           ),
-          client.getJsonPaged(
+          client.getJsonPagedMeta(
             `${folderApi(siteUrl, serverRelativeUrl)}/Files?$select=Name,ServerRelativeUrl,Length,TimeCreated,TimeLastModified,Author/Title,Author/LoginName&$expand=Author&$top=5000`,
             options.signal,
           ),
         ]);
+        const foldersData = folders.items;
+        const filesData = files.items;
+        // A folder with more files/subfolders than getJsonPagedMeta could
+        // enumerate means the report is missing rows for it — record it the
+        // same way an inaccessible folder is recorded, so the summary's
+        // skipped-folder count/details reflect the gap instead of the report
+        // silently under-totaling.
+        if (folders.truncated || files.truncated) {
+          skippedFolders++;
+          skippedFolderDetails.push({
+            url: serverRelativeUrl,
+            error: 'Folder has more items than could be enumerated (listing truncated) — totals for it are incomplete.',
+          });
+        }
 
         const entries: FileEntry[] = filesData.map((f) => {
           const timeLastModified = f.TimeLastModified as string;

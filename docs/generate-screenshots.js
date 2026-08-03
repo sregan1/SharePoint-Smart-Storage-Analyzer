@@ -38,28 +38,28 @@ const INFO_SVG = '<path d="M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20Zm0 6.5a1 1 0 
 const BACK_SVG = '<path d="M15.7 5.3a1 1 0 0 1 0 1.4L10.4 12l5.3 5.3a1 1 0 0 1-1.4 1.4l-6-6a1 1 0 0 1 0-1.4l6-6a1 1 0 0 1 1.4 0Z"/>';
 const REFRESH_SVG = '<path d="M12 4.5a7.5 7.5 0 0 0-6.87 4.5H7.5a.75.75 0 0 1 0 1.5H3.75A.75.75 0 0 1 3 9.75V6a.75.75 0 0 1 1.5 0v1.8A9 9 0 1 1 3 12a.75.75 0 0 1 1.5 0 7.5 7.5 0 1 0 7.5-7.5Z"/>';
 const OTHER_COLOR = '#8a8886';
+// Simple shape icons for the Home screen's three cards — not exact Fluent
+// glyphs, just recognizable silhouettes (treemap blocks / list rows / bars).
+const TREEMAP_SVG = '<rect x="3" y="3" width="8" height="8"/><rect x="13" y="3" width="8" height="5"/><rect x="13" y="10" width="8" height="4"/><rect x="3" y="13" width="4" height="8"/><rect x="9" y="13" width="12" height="8"/>';
+const LIST_SVG = '<rect x="3" y="4" width="18" height="3" rx="1"/><rect x="3" y="10.5" width="18" height="3" rx="1"/><rect x="3" y="17" width="18" height="3" rx="1"/>';
+const BARCHART_SVG = '<rect x="3" y="12" width="4" height="9"/><rect x="10" y="6" width="4" height="15"/><rect x="17" y="2" width="4" height="19"/>';
 
 function icon(svg, size, color) {
   return `<svg width="${size}" height="${size}" viewBox="0 0 24 24" fill="${color}" style="flex-shrink:0;">${svg}</svg>`;
 }
 
-function header(activeTab) {
-  const tabBtn = (label, active) => `
-    <button style="
-      font-family:${FONT};font-size:13px;font-weight:600;padding:6px 12px;border-radius:4px;border:none;cursor:default;
-      background:${active ? '#ffffff' : 'transparent'};color:${active ? BRAND : '#ffffff'};
-    ">${label}</button>`;
+// The real app (App.tsx) hides the Explorer/Storage Report tab buttons that
+// used to live here — navigation moved to the Home screen once it was added,
+// so every non-home/non-settings screen's header is now just the brand
+// icon+text on the left and a single gear icon on the right.
+function header() {
   return `
   <div style="background:${BRAND};padding:10px 16px;display:flex;align-items:center;justify-content:space-between;gap:16px;">
     <div style="display:flex;align-items:center;gap:8px;">
       ${icon(HARDDRIVE_SVG, 20, '#ffffff')}
       <span style="color:#fff;font-family:${FONT};font-weight:600;font-size:14px;white-space:nowrap;">SharePoint Smart Storage Analyzer</span>
     </div>
-    <div style="display:flex;align-items:center;gap:8px;">
-      ${tabBtn('Explorer', activeTab === 'explorer')}
-      ${tabBtn('Storage Report', activeTab === 'report')}
-      <button style="background:transparent;border:none;padding:6px;cursor:default;">${icon(GEAR_SVG, 18, '#ffffff')}</button>
-    </div>
+    <button style="background:transparent;border:none;padding:6px;cursor:default;">${icon(GEAR_SVG, 18, '#ffffff')}</button>
   </div>`;
 }
 
@@ -79,7 +79,7 @@ function pageShell(bodyHtml, opts) {
     .checkbox .box.checked { background: ${BRAND}; border-color: ${BRAND}; position: relative; }
   </style></head>
   <body>
-    ${opts.noHeader ? '' : header(opts.tab)}
+    ${opts.noHeader ? '' : header()}
     <div style="max-width:${opts.maxWidth || '1200px'};margin:0 auto;padding:24px;">
       ${bodyHtml}
     </div>
@@ -98,6 +98,37 @@ function tierLegend(showFolder) {
     ${item(TIER.stale, 'Stale (180–364d)')}
     ${item(TIER.veryStale, 'Very stale (365d+)')}
   </div>`;
+}
+
+// ── 0. Home — landing screen with Tree View / List View / Storage Report cards ──
+function homePage() {
+  const card = (iconSvg, title, desc, buttonLabel) => `
+    <div style="background:#fff;border:1px solid ${NEUTRAL.border};border-radius:6px;overflow:hidden;display:flex;flex-direction:column;box-shadow:0 1px 4px rgba(0,0,0,0.06);">
+      <div style="padding:16px;display:flex;flex-direction:column;gap:8px;flex-grow:1;">
+        <div style="display:flex;align-items:center;gap:8px;">
+          ${icon(iconSvg, 24, BRAND)}
+          <span style="font-size:16px;font-weight:600;">${title}</span>
+        </div>
+        <div style="font-size:12.5px;color:${NEUTRAL.text2};line-height:1.5;flex-grow:1;">${desc}</div>
+      </div>
+      <div style="height:180px;background:${NEUTRAL.tileBg};border-top:1px solid ${NEUTRAL.border};"></div>
+      <div style="padding:16px;">
+        <button class="btn primary" style="width:100%;justify-content:center;">${buttonLabel}</button>
+      </div>
+    </div>`;
+
+  const body = `
+    <div style="max-width:1100px;margin:0 auto;">
+      <div style="font-size:14px;color:${NEUTRAL.text2};margin-bottom:24px;">
+        Understand where your SharePoint storage is going — no PowerShell required.
+      </div>
+      <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:20px;">
+        ${card(TREEMAP_SVG, 'Tree View', 'See every library and folder as a proportional treemap, sized by storage used, and drill straight into the biggest ones.', 'Open Tree View')}
+        ${card(LIST_SVG, 'List View', 'Browse folders and files in a sortable table — size, file count, last modified — for a more precise, spreadsheet-like look.', 'Open List View')}
+        ${card(BARCHART_SVG, 'Storage Report', 'Run a full scan of the site (optionally including subsites) and export a detailed Excel report of stale and very stale files.', 'Run Storage Report')}
+      </div>
+    </div>`;
+  return pageShell(body, { maxWidth: '1160px' });
 }
 
 // ── 1. Explorer — Treemap view (site-wide library treemap, the opening view) ──
@@ -145,7 +176,7 @@ function explorerTreemapPage() {
       <span>"Other (3 libraries)" folds the smallest items out of the treemap so the biggest stay easy to click — switch to List view to see them individually.</span>
       <button class="btn" style="padding:3px 10px;font-size:12px;white-space:nowrap;">Switch to List view</button>
     </div>`;
-  return pageShell(body, { tab: 'explorer' });
+  return pageShell(body, {});
 }
 
 // ── 2. Explorer — List view ──────────────────────────────────────────────────
@@ -204,7 +235,7 @@ function explorerListPage() {
       <thead><tr><th>Name</th><th style="text-align:right;">Size</th><th style="text-align:right;">Items</th><th style="text-align:right;">Version History</th><th style="text-align:right;">Version Count</th><th>Modified</th><th>Status</th></tr></thead>
       <tbody>${rowsHtml}</tbody>
     </table>`;
-  return pageShell(body, { tab: 'explorer' });
+  return pageShell(body, {});
 }
 
 // ── 3. Storage Report — before running ───────────────────────────────────────
@@ -220,7 +251,7 @@ function reportConfigPage() {
       <span class="checkbox"><span class="box"></span>Include version history size (slower)</span>
       <button class="btn primary">Run scan</button>
     </div>`;
-  return pageShell(body, { tab: 'report', maxWidth: '1100px' });
+  return pageShell(body, { maxWidth: '1100px' });
 }
 
 // ── 4. Storage Report — scanning in progress ─────────────────────────────────
@@ -245,7 +276,7 @@ function reportRunningPage() {
         Scanning Campaign Archive… — 8,412 files scanned — 34s elapsed
       </div>
     </div>`;
-  return pageShell(body, { tab: 'report', maxWidth: '1100px' });
+  return pageShell(body, { maxWidth: '1100px' });
 }
 
 // ── 5. Storage Report — results ──────────────────────────────────────────────
@@ -301,7 +332,7 @@ function reportResultsPage() {
       <thead><tr><th>Library</th><th>Name</th><th style="text-align:right;">Size</th><th>Modified</th><th>Author</th><th>Status</th></tr></thead>
       <tbody>${rowsHtml}</tbody>
     </table>`;
-  return pageShell(body, { tab: 'report', maxWidth: '1100px' });
+  return pageShell(body, { maxWidth: '1100px' });
 }
 
 // ── 6. Storage Report — scan history & compare ───────────────────────────────
@@ -345,7 +376,7 @@ function reportHistoryPage() {
         File count change: <strong>+184</strong>
       </div>
     </div>`;
-  return pageShell(body, { tab: 'report', maxWidth: '1100px' });
+  return pageShell(body, { maxWidth: '1100px' });
 }
 
 // ── 7. Settings ───────────────────────────────────────────────────────────────
@@ -422,6 +453,7 @@ async function main() {
   });
 
   const shots = [
+    ['00_home.png', homePage, { width: 1280, height: 620 }],
     ['01_explorer_treemap.png', explorerTreemapPage, { width: 1280, height: 720 }],
     ['02_explorer_list.png', explorerListPage, { width: 1280, height: 560 }],
     ['03_report_config.png', reportConfigPage, { width: 1160, height: 220 }],

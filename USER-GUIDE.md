@@ -1,6 +1,6 @@
 # SharePoint Smart Storage Analyzer — User Guide
 
-**Version 1.2.0**
+**Version 1.3.0**
 **Applies to:** SharePoint Online
 
 ---
@@ -10,14 +10,15 @@
 1. [Overview](#overview)
 2. [Who Is This For?](#who-is-this-for)
 3. [Getting Started](#getting-started)
-4. [Explorer](#explorer)
-5. [Storage Report](#storage-report)
-6. [Understanding Archival Status](#understanding-archival-status)
-7. [Settings](#settings)
-8. [Web Part Configuration](#web-part-configuration)
-9. [Security & Privacy](#security--privacy)
-10. [Frequently Asked Questions](#frequently-asked-questions)
-11. [Troubleshooting](#troubleshooting)
+4. [Home](#home)
+5. [Tree View & List View](#tree-view--list-view)
+6. [Storage Report](#storage-report)
+7. [Understanding Archival Status](#understanding-archival-status)
+8. [Settings](#settings)
+9. [Web Part Configuration](#web-part-configuration)
+10. [Security & Privacy](#security--privacy)
+11. [Frequently Asked Questions](#frequently-asked-questions)
+12. [Troubleshooting](#troubleshooting)
 
 ---
 
@@ -25,14 +26,19 @@
 
 **SharePoint Smart Storage Analyzer** is a browser-based storage-auditing tool built directly into SharePoint Online as a web part. It helps site owners find storage that's safe to archive or clean up — browsing libraries and folders visually, and scanning a whole site for stale files — entirely from the browser, with no PowerShell, no third-party tools, and no IT assistance required.
 
-SharePoint's default interface makes it hard to see *where* storage is actually going. Libraries show a single total, folders don't show their own size, and there's no built-in way to ask "what's old and safe to remove?" Smart Storage Analyzer answers both questions from a single interface: an interactive treemap for visual exploration, and a full-site scan for a complete, exportable report.
+SharePoint's default interface makes it hard to see *where* storage is actually going. Libraries show a single total, folders don't show their own size, and there's no built-in way to ask "what's old and safe to remove?" Smart Storage Analyzer answers both questions from a single interface: an interactive treemap and sortable list for visual exploration, and a full-site scan for a complete, exportable report.
 
 ### What You Can Do
 
+The web part opens on a **Home** screen with three cards to choose from:
+
 | Tool | Purpose |
 |------|---------|
-| **Explorer** | Visually browse a document library as a size-weighted treemap (or a sortable list), drilling into any folder to see what's using space |
+| **Tree View** | Visually browse a document library as a size-weighted treemap, drilling into any folder to see what's using space |
+| **List View** | Browse the same libraries and folders as a sortable table — size, item count, modified date — for a more precise, spreadsheet-like look |
 | **Storage Report** | Scan an entire site (optionally including subsites) and produce a full report of every file, tagged by how stale it is |
+
+Tree View and List View are two doors into the same screen — once inside, a tab lets you switch between them without losing your place. See [Tree View & List View](#tree-view--list-view).
 
 ---
 
@@ -56,9 +62,9 @@ You must be a **Site Owner** on the site (or otherwise hold the Manage Web / Man
 
 The web part is added to a SharePoint page by a site owner or administrator. Once added, navigate to the page where it has been placed — the web part automatically connects to that site; no setup or configuration is required to get started.
 
-By default, it opens on the **Explorer** view, showing a treemap of every document library on the site. (A site administrator can change this — see [Web Part Configuration](#web-part-configuration).)
+By default, it opens on the **Home** screen, where you pick Tree View, List View, or Storage Report. (A site administrator can change this so the web part opens directly on one of the three instead — see [Web Part Configuration](#web-part-configuration).)
 
-![The Explorer opening on a site-wide treemap of every document library](docs/screenshots/01_explorer_treemap.png)
+![The Home screen with Tree View, List View, and Storage Report cards](docs/screenshots/00_home.png)
 
 ### If You Don't Have Access
 
@@ -70,11 +76,27 @@ Contact a site owner to request access, or have them run the tool on your behalf
 
 ---
 
-## Explorer
+## Home
+
+Home is the landing screen the web part opens on by default — three cards, one per tool:
+
+- **Tree View** — opens the treemap, sized by storage.
+- **List View** — opens the same libraries and folders as a sortable table.
+- **Storage Report** — opens the full-site scan and export tool.
+
+Click a card (or its button) to open that tool. Every tool has a **Home** button near the top to bring you back to this screen. The gear icon in the top-right corner opens [Settings](#settings) from Home just as it does from any other screen.
+
+If your account lacks Site Owner access, Home shows the same warning banner described in [If You Don't Have Access](#if-you-dont-have-access), and the three cards are grayed out (hover one for a reminder of what's required) since none of them can show real data without it.
+
+---
+
+## Tree View & List View
 
 ### What It Does
 
-The Explorer opens into a **treemap of every document library on the site**, each library sized by how much storage it uses — so the first thing you see answers "which library is the storage actually in?" Click a library to drill into it, then keep clicking folders to go deeper. Each rectangle is a library, folder, or file, sized proportionally to its storage, so the biggest space users are visually obvious at a glance.
+Tree View and List View are two entry points into the same screen — a **treemap or table of every document library on the site**, each library sized by how much storage it uses, so the first thing you see answers "which library is the storage actually in?" Click a library to drill into it, then keep clicking folders to go deeper. Each rectangle (or row) is a library, folder, or file, sized proportionally to its storage in the treemap, so the biggest space users are visually obvious at a glance.
+
+Whichever card you clicked from Home decides which of the two tabs — Treemap or List — you land on; a tab lets you switch between them at any time without losing your place. A **Home** button near the top returns you to the [Home](#home) screen.
 
 The breadcrumb always starts at **All libraries**; click it to return to the site-wide view. The button row along the top also switches libraries directly, if you'd rather skip a step.
 
@@ -110,11 +132,11 @@ In the **List View**, turning this on adds two columns: **Version History** (the
 
 ### Refreshing
 
-Folder and library sizes are cached briefly after loading so repeat visits are fast. If you've just added, deleted, or moved files and want the Explorer to reflect that immediately rather than waiting for the cache to expire, click **Refresh** — it clears the cached sizes for the current site and re-measures everything you're currently viewing.
+Folder and library sizes are cached briefly after loading so repeat visits are fast. If you've just added, deleted, or moved files and want the view to reflect that immediately rather than waiting for the cache to expire, click **Refresh** — it clears the cached sizes for the current site and re-measures everything you're currently viewing.
 
 ### Library Switcher and Breadcrumbs
 
-- The button row at the top switches between every document library on the current site without leaving the Explorer.
+- The button row at the top switches between every document library on the current site without leaving Tree View / List View.
 - The breadcrumb trail below it shows your current path from the library root; click any earlier segment to jump back to it.
 
 ### Exporting
@@ -127,11 +149,11 @@ From the **List** view, use **Export Excel** or **Export CSV** to download the c
 
 ### What It Does
 
-The Storage Report scans an entire site — and optionally every subsite beneath it — and classifies every file it finds as Active, Stale, or Very stale based on how long it's been since it was last modified. Where the Explorer is for visual browsing, the Storage Report is for producing a complete, exportable, and comparable record.
+The Storage Report scans an entire site — and optionally every subsite beneath it — and classifies every file it finds as Active, Stale, or Very stale based on how long it's been since it was last modified. Where Tree View and List View are for visual browsing, the Storage Report is for producing a complete, exportable, and comparable record.
 
 ### Running a Scan
 
-1. Switch to the **Storage Report** tab.
+1. From [Home](#home), click **Storage Report** (or click **Home** from another screen, then choose it).
 2. Optionally check **Include subsites** to also walk every subsite beneath the current site.
 3. Optionally check **Include hidden/system libraries** to also scan Style Library, Form Templates, and other libraries normally hidden from default views.
 4. Optionally check **Include version history size (slower)** — see [below](#version-history-in-the-storage-report).
@@ -210,7 +232,7 @@ Open **Settings** from the gear icon in the top-right corner of the header on an
 
 | Setting | Default | Description |
 |---------|---------|-------------|
-| **Include subsites in Storage Report scans** | Off | Also walks every subsite beneath the current site. Only affects the Storage Report — the Explorer is always scoped to the current site. |
+| **Include subsites in Storage Report scans** | Off | Also walks every subsite beneath the current site. Only affects the Storage Report — Tree View and List View are always scoped to the current site. |
 | **Include system and hidden libraries** | Off | Includes Style Library, Form Templates, and other libraries normally hidden from default views. Applies to both tools. |
 
 ### Archival Thresholds
@@ -224,7 +246,7 @@ Open **Settings** from the gear icon in the top-right corner of the header on an
 
 | Setting | Default | Description |
 |---------|---------|-------------|
-| **Concurrent API requests** | 6 | How many SharePoint API requests run in parallel during scans and folder loads (1–15). SharePoint's throttling threshold is dynamic, not a fixed number Microsoft publishes — the app retries automatically on throttling (HTTP 429/503/406) with an escalating backoff, but very high values can still net out slower than a moderate one. This also sizes how much the Explorer can measure before a fallback folder/library walk hits its request budget — raising it lets a walk go deeper before falling back to a "≥" (at least) result. |
+| **Concurrent API requests** | 6 | How many SharePoint API requests run in parallel during scans and folder loads (1–15). SharePoint's throttling threshold is dynamic, not a fixed number Microsoft publishes — the app retries automatically on throttling (HTTP 429/503/406) with an escalating backoff, but very high values can still net out slower than a moderate one. This also sizes how much Tree View / List View can measure before a fallback folder/library walk hits its request budget — raising it lets a walk go deeper before falling back to a "≥" (at least) result. |
 
 If you see scans getting *slower* rather than faster as you raise this, that's throttling — turn it back down rather than waiting it out.
 
@@ -240,14 +262,14 @@ Site administrators can configure the web part's default behavior through the Sh
 
 ### Setting a Default View
 
-By default, the web part opens on the **Explorer**. You can change this so it opens directly on the **Storage Report** instead — useful if the web part is placed on a page dedicated to periodic reporting.
+By default, the web part opens on **Home**, letting the user choose. You can change this so it opens directly on **Tree View**, **List View**, or **Storage Report** instead — useful if the web part is placed on a page dedicated to one specific tool, such as periodic reporting.
 
 **To change the default view:**
 
 1. Navigate to the SharePoint page where the web part is installed.
 2. Put the page into **Edit** mode.
 3. Click the web part, then click its **pencil (edit)** icon.
-4. In the property pane, under **General**, use the **Default view on open** dropdown to choose **Explorer** or **Storage Report**.
+4. In the property pane, under **General**, use the **Default view on open** dropdown to choose **Home**, **Tree View**, **List View**, or **Storage Report**.
 5. **Republish** the page to save the change.
 
 ---
@@ -287,7 +309,7 @@ A: No. The tool is entirely read-only. It reports and helps you browse storage; 
 ---
 
 **Q: What does "Version history size" mean, and is it counted separately from Total size?**
-A: Yes, it's separate. SharePoint keeps older versions of a file every time it's edited, and those older versions take up real storage on top of the file's current content. Version history size is that extra amount — it's additive to Total size, not included in it. Enable **Include version history size** in the Explorer or Storage Report to see it (it adds an extra lookup per file, so scans take longer with it on).
+A: Yes, it's separate. SharePoint keeps older versions of a file every time it's edited, and those older versions take up real storage on top of the file's current content. Version history size is that extra amount — it's additive to Total size, not included in it. Enable **Include version history size** in Tree View / List View or Storage Report to see it (it adds an extra lookup per file, so scans take longer with it on).
 
 ---
 
@@ -296,8 +318,8 @@ A: Each subfolder's size is a separate lookup. Sizes are cached for a short time
 
 ---
 
-**Q: What's the difference between the Explorer and the Storage Report?**
-A: The Explorer is for visual, interactive browsing of one library at a time — great for spotting what's big at a glance. The Storage Report is for a complete, exportable, and comparable record of every file across a whole site (and optionally its subsites), classified by staleness.
+**Q: What's the difference between Tree View / List View and the Storage Report?**
+A: Tree View and List View are for visual, interactive browsing of one library at a time — great for spotting what's big at a glance. The Storage Report is for a complete, exportable, and comparable record of every file across a whole site (and optionally its subsites), classified by staleness.
 
 ---
 
@@ -343,7 +365,7 @@ A: Yes. The tool talks only to your own SharePoint environment via the standard 
 - If it happens constantly on your tenant, lower **Concurrent API requests** in Settings. Counter-intuitively, a lower value often finishes *faster* on a busy tenant, because it avoids triggering throttling in the first place.
 - Browser console messages beginning `[SmartStorageAnalyzer] Throttled by SharePoint` confirm this is what's happening, and show the reduced concurrency being used.
 
-### The Explorer says a folder "has no subfolders or files," but its size looked non-zero
+### Tree View / List View says a folder "has no subfolders or files," but its size looked non-zero
 
 - This means the folder's own file listing failed to load (a transient error or throttling) — an error banner should appear explaining what happened. If you don't see one, try reloading the folder; a genuinely empty folder never shows a non-zero size in its parent view in the first place.
 

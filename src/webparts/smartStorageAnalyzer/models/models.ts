@@ -34,11 +34,12 @@ export interface FolderStorageNode {
   // the list view threshold — and guessing at it in the UI ("likely
   // throttling") sends people to fix the wrong thing.
   sizeErrorMessage?: string;
-  // The live walk stopped at its folder budget, so totalSizeBytes/fileCount
-  // are a floor ("at least this much") rather than exact. Distinct from
+  // The live walk stopped at its deadline (or, rarely, a folder listing hit
+  // its own page-count safety valve), so totalSizeBytes/fileCount are a
+  // floor ("at least this much") rather than exact. Distinct from
   // sizeSource === 'error': this is a real, usable measurement — just
   // deliberately incomplete to keep one folder-open from walking a whole
-  // archive (see MAX_FALLBACK_FOLDERS).
+  // archive (see FALLBACK_WALK_DEADLINE_MS in storageMetrics.ts).
   sizeApproximate?: boolean;
   children: FolderStorageNode[];
   hasChildren: boolean;

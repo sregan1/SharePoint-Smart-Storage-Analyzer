@@ -14,7 +14,7 @@ import {
   makeStyles,
   tokens,
 } from '@fluentui/react-components';
-import { Document24Regular, Folder24Regular, ChevronRight16Regular, DocumentArrowDown24Regular, Info16Regular, Warning16Regular, ArrowClockwise20Regular } from '@fluentui/react-icons';
+import { Document24Regular, Folder24Regular, ChevronRight16Regular, DocumentArrowDown24Regular, Info16Regular, Warning16Regular, ArrowClockwise20Regular, ArrowLeft24Regular } from '@fluentui/react-icons';
 
 import { StorageAnalyzerService } from '../services/StorageAnalyzerService';
 import { ExcelExportService } from '../services/ExcelExportService';
@@ -84,10 +84,18 @@ export interface ExplorerViewProps {
   siteUrl: string;
   staleDays: number;
   veryStaleDays: number;
+  // Which of the two internal tabs to open on — set from the Home screen card
+  // (Tree View vs List View) the user picked, or the property pane's default
+  // view. The tab itself remains switchable afterward either way.
+  initialViewMode?: 'treemap' | 'list';
+  // Present only when reached via the Home screen, so a defaultView of
+  // 'tree'/'list' (which skips Home entirely) doesn't show a Back button with
+  // nowhere sensible to return to.
+  onBack?: () => void;
 }
 
 export const ExplorerView: React.FC<ExplorerViewProps> = ({
-  sp, excel, siteUrl, staleDays, veryStaleDays,
+  sp, excel, siteUrl, staleDays, veryStaleDays, initialViewMode, onBack,
 }) => {
   const styles = useStyles();
 
@@ -105,7 +113,7 @@ export const ExplorerView: React.FC<ExplorerViewProps> = ({
   const [rollupsLoading, setRollupsLoading] = React.useState(true);
   const atRoot = libraryUrl === undefined;
   const [error, setError] = React.useState('');
-  const [viewMode, setViewMode] = React.useState<'treemap' | 'list'>('treemap');
+  const [viewMode, setViewMode] = React.useState<'treemap' | 'list'>(initialViewMode ?? 'treemap');
 
   const [selectedUrl, setSelectedUrl] = React.useState<string>('');
   const [childrenLoading, setChildrenLoading] = React.useState(false);
@@ -683,6 +691,13 @@ export const ExplorerView: React.FC<ExplorerViewProps> = ({
 
   return (
     <div className={styles.root}>
+      {onBack && (
+        <div style={{ marginBottom: tokens.spacingVerticalM }}>
+          <Button appearance="subtle" icon={<ArrowLeft24Regular />} onClick={onBack} aria-label="Back to home">
+            Home
+          </Button>
+        </div>
+      )}
       {error && (
         <MessageBar intent="error" style={{ marginBottom: tokens.spacingVerticalM }}>
           <MessageBarBody>{error}</MessageBarBody>
@@ -724,6 +739,13 @@ export const ExplorerView: React.FC<ExplorerViewProps> = ({
       ) : (
         <>
           <div className={styles.libraryRow}>
+            <Button
+              appearance={atRoot ? 'primary' : 'secondary'}
+              size="small"
+              onClick={() => setLibraryUrl(undefined)}
+            >
+              Site
+            </Button>
             {libraries.map((l) => (
               <Button
                 key={l.serverRelativeUrl}

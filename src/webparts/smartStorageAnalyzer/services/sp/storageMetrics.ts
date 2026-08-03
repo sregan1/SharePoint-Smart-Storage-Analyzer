@@ -53,22 +53,24 @@ interface RawMetrics {
 // interactive view only needs its immediate children's sizes; spending
 // unbounded requests to make those exact is the wrong trade every time.
 //
-// The count alone used to BE the bound, fixed at 400 regardless of tenant
-// speed. That's really a wall-clock limit wearing a request-count costume:
-// the walk advances roughly `scanConcurrency` folder-visits per network
-// round-trip, so the same 400 costs ~10s on a fast tenant but multiple
-// minutes on one that's actively throttling (each throttle event can gate
-// every request for up to 60s — see SpApiClient's shared circuit breaker in
-// spCore.ts). So the deadline below is now the PRIMARY bound — it's what
-// actually keeps one user action's wait time predictable — and the count is
-// a backstop tuned to how hard the user has told the app it can push this
-// tenant (scanConcurrency), not a fixed guess.
+// The count used to be the bound itself, first fixed at 400, then scaled to
+// `scanConcurrency * 150` (capped at 2400) on the theory that a faster
+// tenant should get a bigger count budget too. That was still the wrong
+// knob: on a fast tenant the walk burns through even a scaled folder budget
+// in a few seconds — nowhere near the 45s deadline below — and stops with an
+// approximate result while most of the time budget the user already agreed
+// to wait sits unused. The deadline is what actually bounds one user
+// action's wait time (throttling is what makes a request slow, not the
+// tenant's raw speed — see SpApiClient's shared circuit breaker in
+// spCore.ts), so it's now the ONLY practical bound. The count below is a
+// safety valve, not a target: it exists solely to cap total requests if a
+// pathological tree (or a bug) makes the walk far faster than any real
+// SharePoint round-trip, and is set high enough that a healthy walk should
+// never come close to it before its deadline does.
 //
 // Both are shared across the whole call (not per child/library) because
 // that's what actually bounds the cost of one user action.
-export const FALLBACK_FOLDERS_PER_CONCURRENCY = 150;
-export const MIN_FALLBACK_FOLDERS = 300;
-export const MAX_FALLBACK_FOLDERS = 2400;
+export const FALLBACK_FOLDER_SAFETY_VALVE = 20_000;
 export const FALLBACK_WALK_DEADLINE_MS = 45_000;
 export const LIBRARY_ROLLUP_WALK_DEADLINE_MS = 20_000;
 // The retry pass (see getFolderChildren) runs serially, one folder at a time,
@@ -85,11 +87,10 @@ export interface WalkBudget {
 // Single source of truth for creating a budget, so the several creation
 // sites (getShallowEstimate's own default, getFolderChildren,
 // getLibraryRollups, the retry pass) can't drift out of sync with each
-// other or with client.scanConcurrency.
+// other.
 export function newWalkBudget(client: SpApiClient, deadlineMs: number): WalkBudget {
-  const perConcurrency = client.scanConcurrency * FALLBACK_FOLDERS_PER_CONCURRENCY;
   return {
-    remaining: Math.min(MAX_FALLBACK_FOLDERS, Math.max(MIN_FALLBACK_FOLDERS, perConcurrency)),
+    remaining: FALLBACK_FOLDER_SAFETY_VALVE,
     deadlineAtMs: Date.now() + deadlineMs,
     truncated: false,
   };
@@ -188,10 +189,21 @@ function walkFolderSubtree(
     }
     budget.remaining--;
     try {
-      const [filesData, foldersData] = await Promise.all([
-        client.getJsonPaged(`${folderApi(siteUrl, node.url)}/Files?$select=Length,TimeLastModified&$top=5000`),
-        client.getJsonPaged(`${folderApi(siteUrl, node.url)}/Folders?$select=Name,ServerRelativeUrl,TimeLastModified&$top=5000`),
+      const [files, folders] = await Promise.all([
+        client.getJsonPagedMeta(`${folderApi(siteUrl, node.url)}/Files?$select=Length,TimeLastModified&$top=5000`),
+        client.getJsonPagedMeta(`${folderApi(siteUrl, node.url)}/Folders?$select=Name,ServerRelativeUrl,TimeLastModified&$top=5000`),
       ]);
+      const filesData = files.items;
+      const foldersData = folders.items;
+      // A folder with more files/subfolders than getJsonPagedMeta's safety
+      // valve could enumerate is itself a real (if rare) case of "more
+      // content than we counted" — mark it the same way the budget/deadline
+      // cutoff does, rather than silently reporting a total that's short by
+      // whatever fell past the last page.
+      if (files.truncated || folders.truncated) {
+        budget.truncated = true;
+        node.truncated = true;
+      }
       for (const f of filesData) {
         node.acc.totalSizeBytes += Number(f.Length ?? 0);
         node.acc.fileCount++;

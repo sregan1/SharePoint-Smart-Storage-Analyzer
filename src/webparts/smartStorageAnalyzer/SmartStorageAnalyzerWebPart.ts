@@ -13,6 +13,22 @@ export interface ISmartStorageAnalyzerWebPartProps {
   defaultView: AppView;
 }
 
+// Views a user can be dropped onto directly — excludes 'settings', which is
+// reachable only via the in-app gear icon, never a configured landing page.
+const VALID_DEFAULT_VIEWS: AppView[] = ['home', 'tree', 'list', 'report'];
+
+// this.properties.defaultView isn't just "unset or valid" — a web part placed
+// before Home existed has 'explorer' persisted from the old AppView union, and
+// any other unrecognized value could reach here the same way (a hand-edited
+// page, a future removed view). App.tsx's view switch has no branch for those,
+// so the content area silently renders nothing rather than erroring — the `??
+// 'home'` fallback below only catches null/undefined, not a stale string. This
+// normalizes both, so an invalid saved value is treated exactly like an unset
+// one instead of producing a blank web part.
+function resolveDefaultView(saved: AppView | undefined): AppView {
+  return saved && VALID_DEFAULT_VIEWS.indexOf(saved) !== -1 ? saved : 'home';
+}
+
 export default class SmartStorageAnalyzerWebPart extends BaseClientSideWebPart<ISmartStorageAnalyzerWebPartProps> {
   private _sp: StorageAnalyzerService;
   private _excel: ExcelExportService;
@@ -66,7 +82,7 @@ export default class SmartStorageAnalyzerWebPart extends BaseClientSideWebPart<I
         context: this.context,
         sp: this._sp,
         excel: this._excel,
-        defaultView: this.properties.defaultView ?? 'explorer',
+        defaultView: resolveDefaultView(this.properties.defaultView),
         brandColors: this._brandColors,
       });
       ReactDom.render(element, this.domElement);
@@ -107,10 +123,12 @@ export default class SmartStorageAnalyzerWebPart extends BaseClientSideWebPart<I
       properties: {
         label: 'Default view on open',
         options: [
-          { key: 'explorer', text: 'Explorer' },
+          { key: 'home', text: 'Home' },
+          { key: 'tree', text: 'Tree View' },
+          { key: 'list', text: 'List View' },
           { key: 'report', text: 'Storage Report' },
         ],
-        selectedKey: this.properties.defaultView ?? 'explorer',
+        selectedKey: resolveDefaultView(this.properties.defaultView),
       },
     };
     return {

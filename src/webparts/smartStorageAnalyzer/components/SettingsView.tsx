@@ -99,7 +99,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
               onChange={(_, d) => onIncludeSubsitesChange(!!d.checked)}
             />
             <Tooltip
-              content="When checked, the Storage Report also walks every subsite beneath this site. Does not affect Library Overview or Folder Explorer, which are always scoped to the current site."
+              content="When checked, the Storage Report also walks every subsite beneath this site. Does not affect Tree View or List View, which are always scoped to the current site."
               relationship="description"
               withArrow
             >

@@ -12,9 +12,15 @@ A free, open-source SPFx web part that helps SharePoint site owners find storage
 
 > **Requires Site Owner access.** Storage totals rely on the same right as classic Site Settings → Storage Metrics. Anyone without Site Owner access will see the web part with a clear warning banner instead of data.
 
-### Explorer
+### Home
 
-Opens into a WizTree-style treemap of every document library on the site, sized by storage — then drills down through folders to individual files.
+The web part opens on a landing screen with three cards — **Tree View**, **List View**, and **Storage Report** — each with a short description of what it does. A site administrator can instead configure the web part to open directly on any one of the three; see [Configuration](#configuration).
+
+![Home screen with Tree View, List View, and Storage Report cards](docs/screenshots/00_home.png)
+
+### Tree View & List View
+
+Two entry points into the same screen — a WizTree-style treemap of every document library on the site, sized by storage, or the same libraries and folders as a sortable table — then drills down through folders to individual files. A tab switches between the two without losing your place.
 
 ![Explorer treemap view showing folders and files sized by storage weight, color-coded by archival status](docs/screenshots/01_explorer_treemap.png)
 
@@ -119,13 +125,13 @@ To change web part settings, put the page in **Edit** mode, click the web part p
 
 | Setting | Default | Description |
 |---|---|---|
-| **Default view on open** | Explorer | The screen shown when the web part first loads. Options: Explorer, Storage Report |
+| **Default view on open** | Home | The screen shown when the web part first loads. Options: Home, Tree View, List View, Storage Report |
 
 **Scope (in-app Settings)**
 
 | Setting | Default | Description |
 |---|---|---|
-| **Include subsites in Storage Report scans** | Off | Also walks every subsite beneath the current site. Does not affect Explorer |
+| **Include subsites in Storage Report scans** | Off | Also walks every subsite beneath the current site. Does not affect Tree View / List View |
 | **Include system and hidden libraries** | Off | Includes Style Library, Form Templates, and other libraries normally hidden from default views. Applies to all tools |
 
 **Archival thresholds (in-app Settings)**
@@ -139,7 +145,7 @@ To change web part settings, put the page in **Edit** mode, click the web part p
 
 | Setting | Default | Description |
 |---|---|---|
-| **Concurrent API requests** | 6 | How many SharePoint API requests run in parallel during scans and folder loads (1–15). SharePoint's throttling limit is dynamic, not fixed — the app retries automatically on throttling (HTTP 429/503/406), but very high values can still net out slower. Also sizes how deep the Explorer's fallback folder/library measurement goes before falling back to a "≥" (at least) result |
+| **Concurrent API requests** | 6 | How many SharePoint API requests run in parallel during scans and folder loads (1–15). SharePoint's throttling limit is dynamic, not fixed — the app retries automatically on throttling (HTTP 429/503/406), but very high values can still net out slower. Also sizes how deep Tree View / List View's fallback folder/library measurement goes before falling back to a "≥" (at least) result |
 
 ---
 
@@ -149,7 +155,8 @@ To change web part settings, put the page in **Edit** mode, click the web part p
 src/webparts/smartStorageAnalyzer/
 ├── components/
 │   ├── App.tsx                        # Root component — routing, header nav, permission check, theme wiring
-│   ├── ExplorerView.tsx               # Default view — library switcher, treemap + list drill-down, export
+│   ├── HomeView.tsx                    # Landing screen — Tree View / List View / Storage Report cards
+│   ├── ExplorerView.tsx               # Tree View & List View — library switcher, treemap + list drill-down, export
 │   ├── StorageReportView.tsx          # Scan configuration, results, history, compare
 │   ├── SettingsView.tsx               # Full-page settings screen
 │   └── shared/                        # Shared UI: StorageTable, SizeBar, Treemap, tier badges
