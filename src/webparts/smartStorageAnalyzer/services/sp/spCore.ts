@@ -1,5 +1,5 @@
 import { WebPartContext } from '@microsoft/sp-webpart-base';
-import { SPHttpClient } from '@microsoft/sp-http';
+import { SPHttpClient, SPHttpClientResponse } from '@microsoft/sp-http';
 import { clampConcurrency } from '../../utils/settingsBounds';
 
 // Escape single-quotes in OData string literals (SQL-style doubling).
@@ -100,6 +100,22 @@ export const LIBRARY_TEMPLATES = [101, 109, 119];
 // admin or Microsoft support attribute throttling to this web part) rather
 // than as a throttling exemption.
 const CLIENT_TAG = 'SmartStorageAnalyzer/1.2.0';
+
+// Which $batch envelope a coalesced request belongs to. Purely a size policy:
+// 'small' promises a tiny, bounded response and so tolerates a bigger envelope
+// (see BATCH_MAX_SMALL). Groups are also never mixed within one envelope, so a
+// 5,000-row member can't delay 49 one-line ones.
+export type BatchGroup = 'default' | 'small';
+
+// How many 'small'-group requests ride in one $batch envelope.
+//
+// Exported because a caller cannot benefit from this without knowing it. A
+// batch only fills if at least this many logical requests are pending at the
+// same moment, and the number of pending requests is set by the CALLER's
+// worker count — so a caller running 3 workers gets 3-member batches no matter
+// how high this is. That mistake cost a real scan ~15x its throughput; see
+// VERSION_PENDING_TARGET in versionSizes.ts for the other half of the contract.
+export const SMALL_BATCH_SIZE = 50;
 
 // Shared API client: SPFx context plus the throttling-aware fetch helpers and
 // user-tunable scan settings. All sp/ modules take this as their first argument.
@@ -260,13 +276,38 @@ export class SpApiClient {
   // normal case and grouping happens naturally — every call site benefits
   // (both walks, the StorageMetrics probes, and version-history lookups)
   // without any of them changing.
-  private batchQueue: { url: string; resolve: (v: any) => void; reject: (e: any) => void }[] = [];
+  private batchQueue: {
+    url: string; group: BatchGroup; resolve: (v: any) => void; reject: (e: any) => void;
+  }[] = [];
   private batchTimer: ReturnType<typeof setTimeout> | undefined;
   private batchSeq = 0;
   // SPO documents a higher per-batch ceiling, but large batches are slower to
   // fail and harder to attribute when one member misbehaves. 20 captures
   // nearly all of the win at a fraction of the blast radius.
+  //
+  // That reasoning holds for the DEFAULT group, whose members (folder
+  // listings, StorageMetrics probes) return payloads of unbounded size. It
+  // does not hold for requests whose responses are known to be tiny and
+  // bounded — see BATCH_MAX_SMALL.
   private static readonly BATCH_MAX = 20;
+  // A second, larger ceiling for call sites that can promise a small
+  // response. The per-file version fetch (`/Versions?$select=Size&$top=1000`)
+  // qualifies: a handful of numbers per file. On a library that has to measure
+  // thousands of files individually, going 20 -> 50 per envelope removes 60%
+  // of the round trips, which on a throttled tenant is the difference that
+  // matters most.
+  //
+  // 50 rather than SPO's documented 100, deliberately: both batch failure
+  // paths below (envelope failure, part-count mismatch) degrade a failed batch
+  // into N INDIVIDUAL requests. At 100 that is a 100-request amplification
+  // burst aimed at a tenant that just signalled it was unhappy. 50 keeps most
+  // of the win at half the amplification, and can be raised later if this
+  // tenant demonstrates it tolerates it.
+  private static readonly BATCH_MAX_SMALL = SMALL_BATCH_SIZE;
+
+  private static batchMaxFor(group: BatchGroup): number {
+    return group === 'small' ? SpApiClient.BATCH_MAX_SMALL : SpApiClient.BATCH_MAX;
+  }
   // Long enough for concurrent walk tasks to land in the same batch, short
   // enough to be invisible next to a SharePoint round trip.
   private static readonly BATCH_WINDOW_MS = 15;
@@ -284,11 +325,18 @@ export class SpApiClient {
    * oversized member delays every unrelated request that landed in the same
    * 15ms window. Bulk paged reads (see listItems.ts) pass true.
    */
-  public async getJson(url: string, skipBatch = false): Promise<any> {
+  public async getJson(url: string, skipBatch = false, group: BatchGroup = 'default'): Promise<any> {
     if (!this.batchingEnabled || skipBatch) return this.getJsonDirect(url);
     return new Promise<any>((resolve, reject) => {
-      this.batchQueue.push({ url, resolve, reject });
-      if (this.batchQueue.length >= SpApiClient.BATCH_MAX) this.flushBatches();
+      this.batchQueue.push({ url, group, resolve, reject });
+      // Count only this request's OWN group against its own ceiling. A plain
+      // length check on the mixed queue would either flush a 'small' group
+      // long before it filled (because unrelated 'default' requests pushed the
+      // total over 20) or let it overshoot — both of which defeat the point of
+      // having two ceilings at all.
+      let queuedInGroup = 0;
+      for (const item of this.batchQueue) if (item.group === group) queuedInGroup++;
+      if (queuedInGroup >= SpApiClient.batchMaxFor(group)) this.flushBatches();
       else if (this.batchTimer === undefined) {
         this.batchTimer = setTimeout(() => this.flushBatches(), SpApiClient.BATCH_WINDOW_MS);
       }
@@ -303,21 +351,28 @@ export class SpApiClient {
     const queued = this.batchQueue.splice(0, this.batchQueue.length);
     if (queued.length === 0) return;
 
-    // A $batch POST goes to one web's endpoint and cannot span site
-    // collections, so members are grouped by the site URL their own request
-    // targets (everything before /_api/). A subsite-inclusive scan has
-    // requests for several webs in flight at once, and mixing them into one
-    // batch would fail the whole thing.
-    const bySite = new Map<string, typeof queued>();
+    // Partitioned by (site, group).
+    //
+    // Site, because a $batch POST goes to one web's endpoint and cannot span
+    // site collections — a subsite-inclusive scan has requests for several
+    // webs in flight at once and mixing them would fail the whole envelope.
+    //
+    // Group, because the two groups have different size ceilings, and because
+    // keeping them apart is what stops one unbounded 'default' member from
+    // holding up 49 tiny 'small' ones inside the same multipart response.
+    const partitions = new Map<string, typeof queued>();
     for (const item of queued) {
       const site = item.url.split('/_api/')[0];
-      const group = bySite.get(site);
-      if (group) group.push(item);
-      else bySite.set(site, [item]);
+      const key = `${item.group} ${site}`;
+      const bucket = partitions.get(key);
+      if (bucket) bucket.push(item);
+      else partitions.set(key, [item]);
     }
-    bySite.forEach((items, site) => {
-      for (let i = 0; i < items.length; i += SpApiClient.BATCH_MAX) {
-        void this.sendBatch(site, items.slice(i, i + SpApiClient.BATCH_MAX));
+    partitions.forEach((items, key) => {
+      const site = key.substring(key.indexOf(' ') + 1);
+      const max = SpApiClient.batchMaxFor(items[0].group);
+      for (let i = 0; i < items.length; i += max) {
+        void this.sendBatch(site, items.slice(i, i + max));
       }
     });
   }
@@ -352,12 +407,18 @@ export class SpApiClient {
       // header, a tenant with $batch disabled) would otherwise degrade every
       // request to unbatched with no signal at all — the scan would just be
       // as slow as before for no apparent reason.
+      //
+      // The message used to claim this disabled batching "for the rest of this
+      // session", which was never true — the fallback is per-group, and the
+      // next group batches normally. That wording sent a real debugging
+      // session looking for a permanent switch that doesn't exist.
       if (!this.batchFallbackWarned) {
         this.batchFallbackWarned = true;
         // eslint-disable-next-line no-console
         console.warn(
-          `[SmartStorageAnalyzer] $batch unavailable (${err?.message ?? String(err)}) — ` +
-          'falling back to individual requests for the rest of this session.',
+          `[SmartStorageAnalyzer] $batch envelope failed (${err?.message ?? String(err)}) — ` +
+          'running this group as individual requests. Batching stays enabled for later groups; ' +
+          'this warning appears only once.',
         );
       }
       await Promise.all(group.map(async (item) => {
@@ -403,7 +464,12 @@ export class SpApiClient {
     }));
   }
 
-  private async postBatch(siteUrl: string, boundary: string, body: string): Promise<{ status: number; body: string }[]> {
+  private async postBatch(
+    siteUrl: string,
+    boundary: string,
+    body: string,
+    attempt = 0,
+  ): Promise<{ status: number; body: string }[]> {
     await this.waitOutThrottle();
     await this.acquireSlot();
     let resp;
@@ -435,12 +501,35 @@ export class SpApiClient {
       this.releaseSlot();
     }
 
-    // Throttling of the batch POST as a whole: trip the shared gate and let
-    // the caller fall back, which re-runs each member through getJsonDirect
-    // and its full retry budget.
+    // Throttling of the batch POST as a whole. RETRY THE ENVELOPE — do not
+    // throw, because the caller's failure path fans a rejected batch out into
+    // one individual request per member.
+    //
+    // That fan-out is right for a STRUCTURAL failure (a tenant with $batch
+    // disabled, a rejected header) where the envelope will never work. It is
+    // catastrophically wrong for a 429: it answers "you are sending too much"
+    // by turning one request into up to BATCH_MAX_SMALL of them, against a
+    // tenant that is already shedding load. Observed on a real tenant — one
+    // throttled batch, then backoff escalating 10s -> 20s -> 44s as the
+    // amplified individual requests kept arriving.
+    //
+    // The shared gate is tripped either way, so this retry waits out the same
+    // window every other request does.
     if (SpApiClient.isThrottleResponse(resp.status)) {
+      const fallback = SpApiClient.RETRY_BACKOFF_SECONDS[
+        Math.min(attempt, SpApiClient.RETRY_BACKOFF_SECONDS.length - 1)
+      ];
       const header = parseInt(resp.headers.get('Retry-After') ?? '', 10);
-      this.noteThrottled(Math.min(isNaN(header) ? 5 : Math.max(header, 1), SpApiClient.MAX_RETRY_AFTER_SECONDS));
+      this.noteThrottled(Math.min(
+        isNaN(header) ? fallback : Math.max(header, 1),
+        SpApiClient.MAX_RETRY_AFTER_SECONDS,
+      ));
+      if (attempt < SpApiClient.RETRY_BACKOFF_SECONDS.length) {
+        return this.postBatch(siteUrl, boundary, body, attempt + 1);
+      }
+      // Budget exhausted. Now the caller's per-member fallback is the lesser
+      // evil: each member gets its own retry budget and its own slot, which at
+      // least makes progress instead of failing the whole group outright.
       throw new Error(`HTTP ${resp.status} on $batch`);
     }
     if (!resp.ok) throw new Error(`HTTP ${resp.status} on $batch`);
@@ -481,7 +570,54 @@ export class SpApiClient {
       // fully occupied by requests that are only sleeping.
       this.releaseSlot();
     }
+    return this.classifyResponse(resp, url, attempt, () => this.getJsonDirect(url, attempt + 1));
+  }
 
+  /**
+   * A JSON POST with exactly the same governor discipline as getJsonDirect:
+   * throttle gate, in-flight slot released before any backoff wait, and the
+   * shared 429/503/406/non-JSON classification below.
+   *
+   * Added for RenderListDataAsStream (see versionSizes.ts), which is a POST
+   * because its ViewXml is a request body. Deliberately NOT built on
+   * postBatch — that one is hard-wired to multipart/mixed and must keep
+   * jsonRequest/jsonResponse off, which is the opposite of what's needed here.
+   *
+   * SPFx's SPHttpClient supplies X-RequestDigest itself, so there's no digest
+   * plumbing to get wrong.
+   */
+  public async postJson(url: string, body: unknown, attempt = 0): Promise<any> {
+    await this.waitOutThrottle();
+    await this.acquireSlot();
+    let resp;
+    try {
+      resp = await this.context.spHttpClient.post(url, SPHttpClient.configurations.v1, {
+        headers: {
+          'X-ClientService-ClientTag': CLIENT_TAG,
+          'Accept': 'application/json;odata=nometadata',
+          'Content-Type': 'application/json;odata=nometadata',
+        },
+        body: JSON.stringify(body),
+      });
+    } finally {
+      this.releaseSlot();
+    }
+    return this.classifyResponse(resp, url, attempt, () => this.postJson(url, body, attempt + 1));
+  }
+
+  // Shared response handling for getJsonDirect and postJson.
+  //
+  // Factored out rather than duplicated ON PURPOSE: this is where every
+  // throttling rule in the app actually lives (406 being a throttle signal, a
+  // 200-with-HTML being one too, tripping the shared gate even on the final
+  // attempt). Two copies would drift, and a POST path that mishandled
+  // throttling would poison the shared governor for every GET as well.
+  private async classifyResponse(
+    resp: SPHttpClientResponse,
+    url: string,
+    attempt: number,
+    retry: () => Promise<any>,
+  ): Promise<any> {
     if (SpApiClient.isThrottleResponse(resp.status)) {
       const fallback = SpApiClient.RETRY_BACKOFF_SECONDS[
         Math.min(attempt, SpApiClient.RETRY_BACKOFF_SECONDS.length - 1)
@@ -497,7 +633,9 @@ export class SpApiClient {
       // still benefits from backing off, whether or not THIS request retries.
       this.noteThrottled(waitSeconds);
       if (attempt < SpApiClient.RETRY_BACKOFF_SECONDS.length) {
-        return this.getJsonDirect(url, attempt + 1);
+        // retry(), never getJsonDirect — otherwise a throttled POST would
+        // quietly retry itself as a GET and lose its body.
+        return retry();
       }
       throw new Error(
         `HTTP ${resp.status} on ${url} — SharePoint is throttling this account ` +
@@ -534,7 +672,7 @@ export class SpApiClient {
       ];
       this.noteThrottled(fallback);
       if (attempt < SpApiClient.RETRY_BACKOFF_SECONDS.length) {
-        return this.getJsonDirect(url, attempt + 1);
+        return retry();
       }
       throw new Error(
         `HTTP ${resp.status} on ${url} — SharePoint returned a non-JSON response ` +
@@ -560,12 +698,13 @@ export class SpApiClient {
     maxPages = 400,
     skipBatch = false,
     onPage?: (fetchedSoFar: number) => void,
+    group: BatchGroup = 'default',
   ): Promise<{ items: any[]; truncated: boolean }> {
     const all: any[] = [];
     let next: string | undefined = url;
     let page = 0;
     for (; next && page < maxPages && !signal?.aborted; page++) {
-      const data = await this.getJson(next, skipBatch);
+      const data = await this.getJson(next, skipBatch, group);
       all.push(...valueArray(data));
       onPage?.(all.length);
       next = data?.['odata.nextLink'] ?? data?.['@odata.nextLink'] ?? data?.d?.__next;
@@ -588,8 +727,9 @@ export class SpApiClient {
     maxPages = 400,
     skipBatch = false,
     onPage?: (fetchedSoFar: number) => void,
+    group: BatchGroup = 'default',
   ): Promise<any[]> {
-    return (await this.getJsonPagedMeta(url, signal, maxPages, skipBatch, onPage)).items;
+    return (await this.getJsonPagedMeta(url, signal, maxPages, skipBatch, onPage, group)).items;
   }
 
   public async runConcurrent<T>(

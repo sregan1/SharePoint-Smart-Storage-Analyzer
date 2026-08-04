@@ -12,6 +12,8 @@ import {
   Divider,
   Tooltip,
   Spinner,
+  Radio,
+  RadioGroup,
   makeStyles,
   tokens,
 } from '@fluentui/react-components';
@@ -27,7 +29,10 @@ import {
 import { StorageAnalyzerService } from '../services/StorageAnalyzerService';
 import { ExcelExportService } from '../services/ExcelExportService';
 import { ReportHistoryService } from '../services/ReportHistoryService';
-import { CandidateTier, FileEntry, ScanProgress, StorageReportSummary, StoredReport } from '../models/models';
+import {
+  CandidateTier, FileEntry, ScanProgress, StorageReportSummary, StoredReport, VersionScanMode,
+} from '../models/models';
+import { QUICK_VERSION_FILE_LIMIT } from '../utils/settingsBounds';
 import { StorageTable, StorageTableColumn } from './shared/StorageTable';
 import { TierLegend } from './shared/Treemap';
 import { formatBytes, formatAge, formatDuration, formatElapsed } from './shared/formatBytes';
@@ -75,6 +80,37 @@ const useStyles = makeStyles({
 
 const reportHistory = new ReportHistoryService();
 
+// Explains the Quick/Full version-history control.
+//
+// Built as block-level JSX rather than a string: Fluent renders tooltip content
+// as HTML, so "\n\n" in a plain string collapses to a single space and the whole
+// thing arrives as one dense wall of text. Real elements are the only way to get
+// paragraphs, and the term/description pairs below are what make Quick vs Full
+// scannable instead of buried mid-sentence.
+const VersionScanTooltip: React.FC<{ quickLimit: number }> = ({ quickLimit }) => (
+  <div style={{ maxWidth: '320px', display: 'grid', gap: tokens.spacingVerticalS }}>
+    <div>
+      Most libraries return version-history size in the same bulk read as everything else, at no
+      extra scan time. A few lists don&apos;t expose it in bulk at all — those have to be measured
+      one file at a time, and this setting only affects those.
+    </div>
+    <div>
+      <strong>Quick</strong> — the largest {quickLimit.toLocaleString()} files per library, where
+      nearly all version-history storage is.
+    </div>
+    <div>
+      <strong>Full</strong> — every file. Exact, but can take hours on a large library.
+    </div>
+    <div>
+      A file that couldn&apos;t be measured is always reported as unmeasured, never counted as zero.
+    </div>
+    <div>
+      Version <em>size</em> is exact. Version <em>count</em> is estimated from the file&apos;s current
+      version number, so it can run slightly high where a retention limit is configured — never low.
+    </div>
+  </div>
+);
+
 // A report whose entries would otherwise strain IndexedDB quota (10 large
 // scans at, say, 200k rows each) is stored with only its stale/very-stale
 // rows — diffReports only ever reads stale-tier paths plus summary fields,
@@ -113,6 +149,11 @@ export const StorageReportView: React.FC<StorageReportViewProps> = ({
   const [subsites, setSubsites] = React.useState(includeSubsites);
   const [hidden, setHidden] = React.useState(includeHidden);
   const [includeVersions, setIncludeVersions] = React.useState(false);
+  // Only consulted if a library has to escalate all the way to per-file
+  // version measurement — see versionSizes.ts. Quick by default because Full
+  // on a large library where no bulk mechanism works is genuinely an hours-long
+  // operation, and that should be a deliberate choice rather than a surprise.
+  const [versionScanMode, setVersionScanMode] = React.useState<VersionScanMode>('quick');
   const [scanning, setScanning] = React.useState(false);
   const [cancelRequested, setCancelRequested] = React.useState(false);
   const [canceledNotice, setCanceledNotice] = React.useState(false);
@@ -189,6 +230,7 @@ export const StorageReportView: React.FC<StorageReportViewProps> = ({
           siteUrl, includeSubsites: subsites, includeHidden: hidden, staleDays, veryStaleDays,
           scanConcurrency: sp.scanConcurrency, signal: abortController.signal,
           includeVersionHistory: includeVersions,
+          versionScanMode,
         },
         (p) => { scannedRef.current = p.scanned; setProgress(p); },
         () => { scannedRef.current++; },
@@ -208,7 +250,10 @@ export const StorageReportView: React.FC<StorageReportViewProps> = ({
           id: `${Date.now()}`,
           timestamp: Date.now(),
           siteUrl,
-          options: { includeSubsites: subsites, staleDays, veryStaleDays, includeVersionHistory: includeVersions },
+          options: {
+            includeSubsites: subsites, staleDays, veryStaleDays,
+            includeVersionHistory: includeVersions, versionScanMode,
+          },
           summary: result.summary,
           entries: truncate ? result.entries.filter((e) => e.tier !== CandidateTier.Active) : result.entries,
           entriesTruncated: truncate,
@@ -375,20 +420,71 @@ export const StorageReportView: React.FC<StorageReportViewProps> = ({
   // "Site URL" row (see excel.export's siteUrl param).
   const effectiveSiteUrl = viewedReport?.siteUrl ?? siteUrl;
 
-  // Estimated seconds remaining, from the running item-fetch rate projected
-  // across the still-unfetched portion of totalItemsHint (sum of every
-  // library's own ItemCount — see storageScan.ts). Held back until there's
-  // enough signal to not be wildly wrong: under a few seconds elapsed, or
-  // before any items have actually been read, the rate is either undefined
-  // or dominated by fixed per-request overhead rather than real throughput.
+  // ── Phase-scoped progress + ETA ─────────────────────────────────────────
+  // A scan has two phases that measure DIFFERENT things: 'items' counts list
+  // items read, 'versions' counts files individually measured. They are not
+  // interchangeable and must never share a rate.
+  //
+  // The original ETA projected itemsFetched/elapsed against totalItemsHint
+  // unconditionally. That reads correctly during the items phase and is
+  // actively misleading during a version phase: itemsFetched is frozen while
+  // elapsed keeps climbing, so the estimate decays toward "nearly done"
+  // exactly while the slowest part of the scan runs. On a real scan it showed
+  // "~0s remaining" with over an hour left.
+  //
+  // So the phase's own start time is tracked, and each phase is projected
+  // using only its own unit over its own elapsed time.
+  const phaseStartRef = React.useRef<number>(0);
+  const phaseKey = progress?.phase === 'versions'
+    // A new library entering the version phase restarts the estimate: its file
+    // count (and the tenant's throttle state) bear no relation to the last
+    // library's, so carrying the old rate over would be worse than restarting.
+    ? `versions:${progress.versionsTotal ?? 0}`
+    : 'items';
+  React.useEffect(() => {
+    phaseStartRef.current = Date.now();
+  }, [phaseKey]);
+
+  const versionsPhase = progress?.phase === 'versions' && !!progress.versionsTotal;
+
+  // Determinate fraction for the bar, in whatever unit the current phase
+  // measures. Undefined leaves the bar indeterminate, which is the honest
+  // rendering when there is no denominator worth trusting.
+  const progressValue = React.useMemo(() => {
+    if (!progress) return undefined;
+    if (versionsPhase) {
+      return Math.min(1, (progress.versionsDone ?? 0) / progress.versionsTotal!);
+    }
+    if (progress.totalItemsHint) {
+      return Math.min(1, (progress.itemsFetched ?? 0) / progress.totalItemsHint);
+    }
+    return progress.libsTotal > 0 ? progress.libsDone / progress.libsTotal : undefined;
+  }, [progress, versionsPhase]);
+
+  // Held back until there's enough signal to not be wildly wrong: under a few
+  // seconds into a phase, or before anything has completed in it, the rate is
+  // either undefined or dominated by fixed per-request overhead rather than
+  // real throughput.
   const etaSeconds = React.useMemo(() => {
-    if (!progress?.totalItemsHint || elapsed < 3) return null;
+    if (!progress) return null;
+    const phaseElapsed = (Date.now() - phaseStartRef.current) / 1000;
+    if (versionsPhase) {
+      const done = progress.versionsDone ?? 0;
+      if (done <= 0 || phaseElapsed < 3) return null;
+      const rate = done / phaseElapsed;
+      if (rate <= 0) return null;
+      return Math.max(0, progress.versionsTotal! - done) / rate;
+    }
+    if (!progress.totalItemsHint || elapsed < 3) return null;
     const done = progress.itemsFetched ?? 0;
     if (done <= 0) return null;
     const rate = done / elapsed;
     if (rate <= 0) return null;
     return Math.max(0, progress.totalItemsHint - done) / rate;
-  }, [progress, elapsed]);
+    // `elapsed` is a dependency because it ticks every 500ms and is what makes
+    // the items-phase estimate refresh; the version phase reads the clock
+    // directly off phaseStartRef but still needs that same tick to re-run.
+  }, [progress, elapsed, versionsPhase]);
 
   const partialWarnings: string[] = [];
   if (summary) {
@@ -400,16 +496,28 @@ export const StorageReportView: React.FC<StorageReportViewProps> = ({
     if (skippedSites > 0) {
       partialWarnings.push(`${skippedSites} subsite${skippedSites === 1 ? '' : 's'} could not be accessed and ${skippedSites === 1 ? 'was' : 'were'} skipped`);
     }
-    // Per-file version fetches (the fallback for a list where the bulk
-    // SMTotalFileStreamSize field isn't selectable) that failed — without
-    // this, a run with heavy throttling would silently show 0 B / "—" for
-    // affected files with no indication anything went wrong, indistinguishable
-    // from "this file genuinely has no version history".
+    // Version-history gaps, reported as TWO separate conditions because they
+    // have two different remedies. Without this, a run that hit either one
+    // would silently show 0 B / "—" for the affected files with no indication
+    // anything went wrong — indistinguishable from "these files genuinely have
+    // no version history".
     const skippedVersions = summary.skippedVersions ?? 0;
+    const unmeasuredVersions = summary.unmeasuredVersions ?? 0;
     if (summary.versionHistoryIncluded && skippedVersions > 0) {
+      // Attempted and failed — retrying, or lowering concurrency, may fix it.
       partialWarnings.push(
-        `version history could not be measured for ${skippedVersions} file${skippedVersions === 1 ? '' : 's'} ` +
+        `version history could not be measured for ${skippedVersions.toLocaleString()} file${skippedVersions === 1 ? '' : 's'} ` +
         '(excluded from the version history totals below, not counted as zero)',
+      );
+    }
+    if (summary.versionHistoryIncluded && unmeasuredVersions > 0) {
+      // Never attempted. Retrying changes nothing, so the message names the
+      // thing that would actually change the outcome instead.
+      partialWarnings.push(
+        `${unmeasuredVersions.toLocaleString()} smaller file${unmeasuredVersions === 1 ? '' : 's'} were not measured for version history`
+        + (summary.versionScanMode === 'quick'
+          ? ` (Quick mode measures the largest ${QUICK_VERSION_FILE_LIMIT.toLocaleString()} per library — re-run with Full to measure all of them)`
+          : ' (excluded from the version history totals below, not counted as zero)'),
       );
     }
   }
@@ -523,25 +631,65 @@ export const StorageReportView: React.FC<StorageReportViewProps> = ({
         )}
       </div>
       {includeVersions && (
-        <Text style={{ display: 'block', color: tokens.colorNeutralForeground3, fontSize: tokens.fontSizeBase200, marginTop: `-${tokens.spacingVerticalS}`, marginBottom: tokens.spacingVerticalM }}>
-          Version history size is exact; Version Count is an estimate derived from the file's current
-          version number, so it can run slightly high on a library with a configured version-retention
-          limit (it never runs low). Usually adds no extra scan time, except on a list where version
-          history isn't available as a bulk field — that one falls back to a slower, one-request-per-file
-          measurement.
-        </Text>
+        // One line, not four paragraphs. The detail hasn't been deleted — it
+        // moved into the same Info16Regular + Tooltip pattern the stat tiles
+        // use, so it's available on demand instead of crowding the controls.
+        <div
+          className={styles.row}
+          style={{ marginTop: `-${tokens.spacingVerticalS}`, gap: tokens.spacingHorizontalS }}
+        >
+          <Text style={{ color: tokens.colorNeutralForeground3, fontSize: tokens.fontSizeBase200 }}>
+            If measured per file{' '}
+            <Tooltip
+              relationship="label"
+              content={{
+                children: <VersionScanTooltip quickLimit={QUICK_VERSION_FILE_LIMIT} />,
+              }}
+            >
+              <Info16Regular style={{ verticalAlign: 'middle', cursor: 'help' }} />
+            </Tooltip>
+          </Text>
+          <RadioGroup
+            layout="horizontal"
+            value={versionScanMode}
+            onChange={(_, d) => setVersionScanMode(d.value as VersionScanMode)}
+            disabled={scanning}
+          >
+            <Radio value="quick" label={`Quick (largest ${QUICK_VERSION_FILE_LIMIT.toLocaleString()})`} />
+            <Radio value="full" label="Full (all files, slow)" />
+          </RadioGroup>
+        </div>
       )}
 
       {scanning && progress && (
         <div style={{ marginBottom: tokens.spacingVerticalL }}>
-          <ProgressBar
-            value={progress.totalItemsHint
-              ? Math.min(1, (progress.itemsFetched ?? 0) / progress.totalItemsHint)
-              : (progress.libsTotal > 0 ? progress.libsDone / progress.libsTotal : undefined)}
-          />
+          <ProgressBar value={progressValue} />
           <Text style={{ display: 'block', marginTop: tokens.spacingVerticalXS, color: tokens.colorNeutralForeground3, fontSize: tokens.fontSizeBase200 }}>
-            {progress.message} — {progress.scanned} files scanned — {formatElapsed(elapsed)} elapsed
+            {progress.message}
+            {/* The counter shown has to match what the bar is measuring, or
+                the two disagree on screen during the version phase. */}
+            {versionsPhase
+              ? ` (${(progress.versionsDone ?? 0).toLocaleString()} of ${progress.versionsTotal!.toLocaleString()} files measured)`
+              : ` — ${progress.scanned} files scanned`}
+            {' — '}{formatElapsed(elapsed)} elapsed
             {etaSeconds != null && ` — ~${formatDuration(etaSeconds)} remaining`}
+            {/* Why this library is slow, and that stopping is safe — kept to an
+                icon so a long scan doesn't grow a paragraph underneath it. */}
+            {versionsPhase && (
+              <>
+                {' '}
+                <Tooltip
+                  relationship="label"
+                  content={
+                    'This library doesn\'t expose version-history size in bulk, so each file is '
+                    + 'being measured individually. Cancel is safe — everything collected so far is '
+                    + 'kept, and unmeasured files are reported as unmeasured rather than zero.'
+                  }
+                >
+                  <Info16Regular style={{ verticalAlign: 'middle', cursor: 'help' }} />
+                </Tooltip>
+              </>
+            )}
           </Text>
         </div>
       )}
@@ -592,6 +740,30 @@ export const StorageReportView: React.FC<StorageReportViewProps> = ({
                   </Tooltip>
                 </Text>
                 <Text weight="semibold" style={{ display: 'block', fontSize: tokens.fontSizeBase500 }}>{formatBytes(summary.totalVersionSizeBytes ?? 0)}</Text>
+                {/* How this number was obtained, when it wasn't the free bulk
+                    field. Worth surfacing because the difference between the
+                    bulk side channel and the per-file pass is the difference
+                    between a complete figure and a capped sample — and nothing
+                    else on screen would tell the user which one they got.
+
+                    Keyed on unmeasuredVersions, NOT on the scan mode. Quick
+                    only samples when there were more candidate files than its
+                    budget; when the version labels proved most files had no
+                    retained versions, the budget never binds and Quick measured
+                    every file that could have contributed. Saying "largest
+                    files only" there would understate a complete answer. */}
+                {summary.versionSizeStrategy === 'per-file' && (
+                  <Text style={{ display: 'block', fontSize: tokens.fontSizeBase200, color: tokens.colorNeutralForeground3 }}>
+                    {(summary.unmeasuredVersions ?? 0) > 0
+                      ? `measured per file — largest ${QUICK_VERSION_FILE_LIMIT.toLocaleString()} only, so this is a floor`
+                      : 'measured per file — all files with versions'}
+                  </Text>
+                )}
+                {summary.versionSizeStrategy === 'none' && (
+                  <Text style={{ display: 'block', fontSize: tokens.fontSizeBase200, color: tokens.colorPaletteMarigoldForeground1 }}>
+                    incomplete — no version-history source available for at least one library
+                  </Text>
+                )}
               </div>
             )}
           </div>

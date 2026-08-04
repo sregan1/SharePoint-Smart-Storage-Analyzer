@@ -3,19 +3,30 @@ import { FileEntry, LibraryInfo, ScanOptions } from '../../models/models';
 import { ageInDays, classify } from '../../utils/archivalClassification';
 import { fetchLibraryItems, FlatItem } from './listItems';
 import { fetchRecycleBinItems } from './recycleBin';
+import { applyVersionSizes, probeVersionSizeStrategy } from './versionSizes';
 
 export interface WalkLibraryResult {
   // Set when the library's own bulk query failed and nothing could be read
   // from it. There is deliberately no recursive-walk fallback any more, so
   // this is terminal for the library and the caller reports it as skipped.
   failed?: { url: string; error: string };
-  // Per-file version fetches that failed during the per-file fallback (see
-  // listItems.ts's fillMissingVersionSizes) — only ever nonzero when
-  // options.includeVersionHistory triggered that fallback for this library.
+  // Version measurements ATTEMPTED AND FAILED — only ever nonzero when the
+  // escalation reached its per-file path for this library.
   skippedVersions: number;
+  // Version measurements NEVER ATTEMPTED (Quick-mode budget, cancellation, or
+  // no working mechanism at all). See StorageReportSummary for why this is
+  // deliberately not folded into skippedVersions.
+  unmeasuredVersions: number;
+  // Which mechanism produced this library's version numbers, when it needed
+  // an escalation at all. Undefined means the inline bulk field worked.
+  versionStrategy?: string;
 }
 
 export type SiteUsers = Map<number, { title: string; loginName: string }>;
+
+// Progress for the version-measuring phase of one library, if it reaches the
+// per-file path. Already throttled at the source (versionSizes.ts).
+export type VersionProgress = (done: number, total: number) => void;
 
 // Enumerates one library for the Storage Report.
 //
@@ -35,11 +46,13 @@ export type SiteUsers = Map<number, { title: string; loginName: string }>;
 // was still incomplete. The count is now an estimate rather than exact (it
 // can overstate on a library with a configured version-retention limit —
 // see listItems.ts's VERSION_LABEL_FIELD comment for the full explanation)
-// in exchange for costing nothing at all — EXCEPT on a list where
-// SMTotalFileStreamSize isn't selectable at all (Storage Metrics not active
-// for that list/site), where listItems.ts falls back to the old per-file
-// request when includeVersionHistory is on, paying that same per-file cost
-// again but only for libraries that actually need it.
+// in exchange for costing nothing at all.
+//
+// When that inline field is rejected by the list — which happens, and on a
+// real tenant happens for a 193,915-item "Documents" library — version size
+// is escalated through versionSizes.ts instead. That escalation is owned HERE
+// rather than inside listItems.ts purely to keep the two modules from
+// depending on each other's values (versionSizes.ts needs FlatItem).
 export async function walkLibrary(
   client: SpApiClient,
   siteUrl: string,
@@ -48,17 +61,22 @@ export async function walkLibrary(
   users: SiteUsers,
   onEntry: (entry: FileEntry) => void,
   onProgress?: (fetchedSoFar: number) => void,
+  onVersionProgress?: VersionProgress,
 ): Promise<WalkLibraryResult> {
   let items: FlatItem[];
   let skippedVersions = 0;
+  let unmeasuredVersions = 0;
+  let versionStrategy: string | undefined;
+  // Set by listItems.ts when the reduced field set won, i.e. these rows carry
+  // no inline version size.
+  let versionFieldUnavailable = false;
   try {
     items = library.isRecycleBin
       ? await fetchRecycleBinItems(client, siteUrl, { signal: options.signal, onProgress })
       : await fetchLibraryItems(client, siteUrl, library, {
         signal: options.signal,
         onProgress,
-        includeVersionHistory: options.includeVersionHistory,
-        onVersionSkipped: () => { skippedVersions++; },
+        onVersionFieldUnavailable: () => { versionFieldUnavailable = true; },
       });
   } catch (err: any) {
     // Terminal for this library. Reported rather than silently under-counted
@@ -67,10 +85,46 @@ export async function walkLibrary(
     const message = err?.message ?? String(err);
     // eslint-disable-next-line no-console
     console.warn(`[SmartStorageAnalyzer] Could not enumerate ${library.title}: ${message}`);
-    return { failed: { url: library.serverRelativeUrl, error: message }, skippedVersions };
+    return {
+      failed: { url: library.serverRelativeUrl, error: message },
+      skippedVersions,
+      unmeasuredVersions,
+    };
   }
 
-  if (options.signal?.aborted) return { skippedVersions };
+  if (options.signal?.aborted) return { skippedVersions, unmeasuredVersions };
+
+  // ── Version-history escalation ──────────────────────────────────────────
+  // Only when the inline field was missing AND the user asked for version
+  // history. The Recycle Bin is excluded: its rows are not list items and
+  // deleted files have no addressable /Versions collection.
+  if (versionFieldUnavailable && !library.isRecycleBin) {
+    if (!options.includeVersionHistory) {
+      // Same message this has always emitted — the data genuinely isn't in
+      // the report, and saying so beats a silent 0 B.
+      // eslint-disable-next-line no-console
+      console.warn(
+        `[SmartStorageAnalyzer] ${library.title}: version-history size unavailable on this list ` +
+        '— sizes exclude retained versions for this library.',
+      );
+    } else {
+      const strategy = await probeVersionSizeStrategy(client, siteUrl, library, options.signal);
+      const fill = await applyVersionSizes(client, siteUrl, library, items, {
+        signal: options.signal,
+        mode: options.versionScanMode ?? 'quick',
+        onProgress: onVersionProgress,
+        onSkipped: () => { skippedVersions++; },
+      }, strategy);
+      versionStrategy = fill.strategy;
+      // skippedVersions is already accumulated via onSkipped, so only the
+      // never-attempted count is taken from the result here.
+      unmeasuredVersions += fill.unmeasured;
+    }
+  }
+
+  // Entries are built AFTER the escalation on purpose: applyVersionSizes
+  // mutates the FlatItems in place, and onEntry must never publish a
+  // FileEntry whose versionSizeBytes is about to change underneath it.
 
   const files = items.filter((i) => !i.isFolder);
   const entries: FileEntry[] = files.map((f) => {
@@ -92,12 +146,14 @@ export async function walkLibrary(
       authorDisplayName: author?.title,
       ageDays,
       tier: classify(ageDays, options.staleDays, options.veryStaleDays),
-      // Both free from the bulk sweep — see the module comment above.
+      // Usually free from the bulk sweep; otherwise filled by the escalation
+      // above. Still undefined when nothing could measure it — which the
+      // report renders as "—" rather than 0 B.
       versionSizeBytes: f.versionSizeBytes,
       versionCount: f.versionCountApprox,
     };
   });
 
   for (const entry of entries) onEntry(entry);
-  return { skippedVersions };
+  return { skippedVersions, unmeasuredVersions, versionStrategy };
 }

@@ -20,6 +20,23 @@ export const MIN_VERY_STALE_DAYS = 2;
 export const MAX_VERY_STALE_DAYS = 3650;
 export const DEFAULT_VERY_STALE_DAYS = 365;
 
+// How many files ONE library may measure individually in a Quick version-history
+// scan, when no bulk mechanism for version size works on that list and the only
+// remaining option is one request per file (see versionSizes.ts).
+//
+// Not currently user-tunable, deliberately: the meaningful choice is Quick vs
+// Full (a scan option in the UI), and a third numeric knob in Settings would be
+// one nobody could reason about. Exported here rather than buried in
+// versionSizes.ts so the UI can name the actual number in its own hint text
+// instead of hardcoding a second copy of it.
+//
+// 5,000 is chosen against a real 193,915-item library: that is ~2.5% of the
+// files, and because the budget is spent LARGEST-FIRST it still captures the
+// large majority of retained-version bytes (version size correlates strongly
+// with current file size). A cap that measured an arbitrary 5,000 would be
+// nearly worthless by comparison.
+export const QUICK_VERSION_FILE_LIMIT = 5000;
+
 function clampInt(v: unknown, min: number, max: number, fallback: number): number {
   const n = typeof v === 'number' ? v : parseInt(String(v), 10);
   if (!isFinite(n)) return fallback;

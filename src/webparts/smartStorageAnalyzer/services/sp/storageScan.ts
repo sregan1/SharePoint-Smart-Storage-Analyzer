@@ -40,6 +40,12 @@ export async function scanSite(
   let skippedFolders = 0;
   let skippedSites = 0;
   let skippedVersions = 0;
+  let unmeasuredVersions = 0;
+  // Which escalation mechanism was used for version size. Recorded from the
+  // libraries that needed one; if several disagree (rare — it depends on the
+  // list, not the tenant) the least capable wins, since that is what actually
+  // bounds how complete the report's version numbers are.
+  const versionStrategies = new Set<string>();
   const skippedFolderDetails: { url: string; error: string }[] = [];
   const librariesPerSite: { siteUrl: string; libraries: Awaited<ReturnType<typeof getLibraries>> }[] = [];
 
@@ -92,18 +98,20 @@ export async function scanSite(
         itemsFetched: itemsDoneAcrossLibraries, totalItemsHint,
       });
       let lastFetchedInLibrary = 0;
-      const { failed, skippedVersions: libSkippedVersions } = await walkLibrary(
+      const {
+        failed,
+        skippedVersions: libSkippedVersions,
+        unmeasuredVersions: libUnmeasuredVersions,
+        versionStrategy,
+      } = await walkLibrary(
         client, siteUrl, library, options, users,
         (entry) => {
           entries.push(entry);
           onEntry?.(entry);
         },
-        // Fires per 5,000-item page, so a large library reports real
-        // movement instead of sitting on one number until it finishes. This
-        // is now the ONLY phase of a library's scan — version history (size
-        // and an approximate count) arrives in this same bulk read at no
-        // extra request cost, so there is no separate slow pass after it any
-        // more (see fileWalk.ts).
+        // Fires per 5,000-item page, so a large library reports real movement
+        // instead of sitting on one number until it finishes. This is the
+        // 'items' phase — normally the whole of a library's scan.
         (fetchedSoFar) => {
           lastFetchedInLibrary = fetchedSoFar;
           onProgress({
@@ -113,6 +121,26 @@ export async function scanSite(
             libsTotal,
             itemsFetched: itemsDoneAcrossLibraries + fetchedSoFar,
             totalItemsHint,
+            phase: 'items',
+          });
+        },
+        // The 'versions' phase, which only exists when a library had to
+        // escalate all the way to per-file measurement. Reported in its OWN
+        // unit (files measured, not items read) and flagged as a distinct
+        // phase, because the UI must not project an items-per-second rate
+        // across it — doing so is what made a slow pass read as
+        // "~0s remaining" while it still had an hour to go.
+        (versionsDone, versionsTotal) => {
+          onProgress({
+            message: `Measuring version history in ${library.title}…`,
+            scanned: entries.length,
+            libsDone,
+            libsTotal,
+            itemsFetched: itemsDoneAcrossLibraries + lastFetchedInLibrary,
+            totalItemsHint,
+            phase: 'versions',
+            versionsDone,
+            versionsTotal,
           });
         },
       );
@@ -126,11 +154,13 @@ export async function scanSite(
         }
       }
       skippedVersions += libSkippedVersions;
+      unmeasuredVersions += libUnmeasuredVersions;
+      if (versionStrategy) versionStrategies.add(versionStrategy);
       itemsDoneAcrossLibraries += lastFetchedInLibrary;
       libsDone++;
       onProgress({
         message: `Scanning ${library.title}…`, scanned: entries.length, libsDone, libsTotal,
-        itemsFetched: itemsDoneAcrossLibraries, totalItemsHint,
+        itemsFetched: itemsDoneAcrossLibraries, totalItemsHint, phase: 'items',
       });
     }
   }
@@ -167,7 +197,14 @@ export async function scanSite(
   summary.skippedSites = skippedSites;
   summary.skippedFolderDetails = skippedFolderDetails;
   summary.skippedVersions = skippedVersions;
+  summary.unmeasuredVersions = unmeasuredVersions;
   summary.versionHistoryIncluded = options.includeVersionHistory;
+  summary.versionScanMode = options.versionScanMode;
+  // Undefined when every library got version size inline — the common, fast
+  // case, where naming a "strategy" would imply something unusual happened.
+  if (versionStrategies.size > 0) {
+    summary.versionSizeStrategy = Array.from(versionStrategies).sort().join(', ');
+  }
 
   return { entries, summary, canceled: !!options.signal?.aborted };
 }

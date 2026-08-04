@@ -1,4 +1,4 @@
-import { SpApiClient, valueArray, odata } from './spCore';
+import { SpApiClient, valueArray } from './spCore';
 import { LibraryInfo } from '../../models/models';
 
 // Bulk, FLAT enumeration of a document library's contents.
@@ -35,7 +35,11 @@ export const ITEMS_PAGE_SIZE = 5000;
 // (0 = file, 1 = folder). The folder rows are not waste — the treemap needs
 // the folder list anyway, and getting it here means never asking for it
 // separately.
-const BASE_FIELDS = 'FileRef,FileLeafRef,FSObjType,Modified,Created,AuthorId,EditorId';
+// Id leads the list because the version-size side channel (versionSizes.ts)
+// joins its own sweep back to these rows by Id — see FlatItem.id. Id is
+// always selectable on every list (the shard path below has always relied on
+// that), so including it universally costs nothing.
+const BASE_FIELDS = 'Id,FileRef,FileLeafRef,FSObjType,Modified,Created,AuthorId,EditorId';
 // File size comes from the File/Length navigation property, NOT the
 // File_x0020_Size list column. File_x0020_Size looks like the obvious choice
 // (it's the "File Size" column visible in the UI) but it's a Computed-type
@@ -80,6 +84,12 @@ const VERSION_LABEL_FIELD = 'OData__UIVersionString';
 export interface FlatItem {
   // Server-relative path, e.g. /sites/x/Shared Documents/A/B/report.docx
   fileRef: string;
+  // List item id. Load-bearing for the version-size SIDE CHANNEL
+  // (versionSizes.ts): that sweep projects a different field set and must be
+  // joined back to these rows, and Id is the only stable join key — FileRef
+  // can differ in encoding between projections, and a file moved mid-sweep
+  // changes its path but never its id.
+  id?: number;
   name: string;
   isFolder: boolean;
   sizeBytes: number;
@@ -92,6 +102,11 @@ export interface FlatItem {
   // this does and doesn't capture. undefined when the list didn't return the
   // version label (folders don't have one; num() would otherwise report 0).
   versionCountApprox?: number;
+  // True when the version label PROVES this file has nothing in its /Versions
+  // collection, so a per-file version request would certainly return zero and
+  // can be skipped outright. See hasNoRetainedVersions — deliberately NOT the
+  // same test as `versionCountApprox === 0`.
+  versionsProvablyZero?: boolean;
   created: string;
   modified: string;
   authorId?: number;
@@ -111,20 +126,15 @@ export interface FetchItemsOptions {
   // real movement. Pages are 5,000 items, so this fires roughly once per
   // request rather than continuously.
   onProgress?: (fetchedSoFar: number) => void;
-  // Opt-in fallback: when the bulk SMTotalFileStreamSize field turns out to
-  // be unselectable on this list (confirmed unsupported, not just an
-  // $orderby quirk — see probeMaxIdAndFields), fetch each file's real
-  // /Versions collection instead of silently reporting no version-history
-  // size at all. Only engaged when this is true, since it costs one extra
-  // request per FILE — roughly doubling this library's request volume — the
-  // opposite of the whole point of the bulk sweep, so it must be something
-  // the user explicitly asked for rather than a free byproduct.
-  includeVersionHistory?: boolean;
-  // Fired once per file whose per-file version fetch failed (throttling
-  // exhausted, transient error) — only relevant when includeVersionHistory
-  // triggered the fallback above. Kept in-scope rather than aborting the
-  // whole library, same as a skipped folder.
-  onVersionSkipped?: () => void;
+  // Fired (at most once per library) when SMTotalFileStreamSize could not be
+  // selected, so the returned items carry no inline version size. The version
+  // ESCALATION itself deliberately lives in the caller (fileWalk.ts) rather
+  // than here: versionSizes.ts needs FlatItem from this module, so invoking it
+  // from here would make the two files circularly dependent for values, not
+  // just types. Keeping the signal one-directional avoids that entirely.
+  //
+  // Explorer never passes this, so it never pays for a version escalation.
+  onVersionFieldUnavailable?: () => void;
 }
 
 // Thrown when a library cannot be enumerated at all. The caller reports the
@@ -149,6 +159,30 @@ function parseVersionCountApprox(versionLabel: unknown): number | undefined {
   return Math.max(0, major - 1);
 }
 
+// True ONLY when the version label proves the /Versions collection is empty:
+// exactly major version 1, with no minor/draft part. Anything else — a nonzero
+// fractional part, an absent or unparseable label, "0.3" for a never-published
+// draft — is treated as unknown, and the file is still measured.
+//
+// Deliberately STRICTER than parseVersionCountApprox, and not interchangeable
+// with it. That function returns 0 for "1.3" as well, because it only ever
+// claimed to count MAJOR versions. As a skip test that would be wrong:
+// /Versions includes minor versions too, so "1.3" has three retained versions
+// with real bytes that would get silently zeroed on any library with
+// minor/draft versioning enabled.
+//
+// The degradation direction here is always "slower, never wrong" — an
+// unrecognized label returns false and the file gets a real measurement.
+function hasNoRetainedVersions(versionLabel: unknown): boolean {
+  if (versionLabel == null) return false;
+  const parts = String(versionLabel).split('.');
+  const major = parseInt(parts[0], 10);
+  if (!isFinite(major) || major !== 1) return false;
+  if (parts.length === 1) return true;
+  const minor = parseInt(parts[1], 10);
+  return isFinite(minor) && minor === 0;
+}
+
 function toItem(raw: any): FlatItem {
   const size = num(raw.File?.Length);
   // SMTotalFileStreamSize covers current + retained versions. Guard against
@@ -158,15 +192,24 @@ function toItem(raw: any): FlatItem {
   const totalWithVersions = raw.SMTotalFileStreamSize != null
     ? num(raw.SMTotalFileStreamSize)
     : undefined;
+  // Positive proof of no retained versions. When the bulk field is missing,
+  // this is what lets the version pass skip the large majority of files
+  // outright instead of spending a request each to confirm zero.
+  const provablyZero = hasNoRetainedVersions(raw.OData__UIVersionString);
   return {
     fileRef: String(raw.FileRef ?? ''),
+    id: raw.Id != null ? Number(raw.Id) : undefined,
     name: String(raw.FileLeafRef ?? ''),
     isFolder: Number(raw.FSObjType ?? 0) === 1,
     sizeBytes: size,
+    // `0` rather than `undefined` when provably zero: undefined means "not
+    // measured" everywhere in this app (rendered as "—"), and here there is
+    // positive proof rather than absence of information.
     versionSizeBytes: totalWithVersions != null
       ? Math.max(0, totalWithVersions - size)
-      : undefined,
+      : (provablyZero ? 0 : undefined),
     versionCountApprox: parseVersionCountApprox(raw.OData__UIVersionString),
+    versionsProvablyZero: provablyZero,
     created: raw.Created as string,
     modified: raw.Modified as string,
     authorId: raw.AuthorId != null ? Number(raw.AuthorId) : undefined,
@@ -198,14 +241,21 @@ const SHARD_MIN_ITEMS = ITEMS_PAGE_SIZE;
 
 interface FieldProbe {
   maxId: number;
-  // The winning $select field list (with or without VERSION_FIELD),
-  // INCLUDING the leading "Id" this path needs that the plain sweep doesn't.
+  // The winning $select field list (with or without VERSION_FIELD). Id is
+  // already the first entry of BASE_FIELDS, so this path no longer prepends
+  // it separately.
   fields: string;
+  // Whether `fields` includes VERSION_FIELD. NON-OPTIONAL on purpose: when
+  // this is false the caller MUST route version size through the escalation
+  // (versionSizes.ts) or explicitly warn, and a field that could be quietly
+  // left undefined is exactly how the earlier version of this code silently
+  // dropped version history for the largest libraries. Make the compiler ask.
+  versionFieldIncluded: boolean;
 }
 
 function probeUrl(siteUrl: string, listId: string, fields: string): string {
   return `${siteUrl}/_api/web/lists(guid'${listId}')/items`
-    + `?$select=Id,${fields}&$expand=${SIZE_EXPAND}&$orderby=Id desc&$top=1`;
+    + `?$select=${fields}&$expand=${SIZE_EXPAND}&$orderby=Id desc&$top=1`;
 }
 
 // One small request that answers two questions at once: the library's
@@ -214,37 +264,80 @@ function probeUrl(siteUrl: string, listId: string, fields: string): string {
 // negotiation fetchLibraryItems does, just piggybacked here instead of
 // costing its own separate request).
 //
-// Deliberately only ONE attempt, with the full field list. This used to
-// retry without SMTotalFileStreamSize on a 400 and shard with the reduced
-// field list — but on a real tenant that 400 turned out to mean "this field
-// can't be combined with $orderby" (confirmed: the exact same field selects
-// fine on fetchLibraryItems's own no-$orderby query), not "this field
-// doesn't exist on this list". Retrying and sharding anyway silently
-// dropped version-history size for the entire library — which, being large
-// enough to need sharding in the first place, is exactly where the bulk of
-// version-history size actually lives. So a 400 here — for any reason —
-// just means sharding shouldn't be attempted at all; fetchLibraryItems
-// falls back to its own plain, non-$orderby sweep, which negotiates the
-// field correctly on its own (keeping it when selectable, dropping it only
-// when the list genuinely doesn't support it, e.g. Site Pages).
+// TWO attempts, and the history of this function is worth knowing before
+// changing it again.
+//
+// Originally it retried without SMTotalFileStreamSize on a 400 and sharded
+// with the reduced field list. That silently dropped version-history size for
+// the entire library — and because sharding only engages on LARGE libraries,
+// it dropped it exactly where most version storage lives. The fix at the time
+// was to give up on sharding altogether when the full field set was rejected,
+// on the reasoning that losing concurrency was better than losing data.
+//
+// That reasoning was correct *while there was no other way to get version
+// size*. There is now (versionSizes.ts): a rejected field routes version size
+// to a separate un-expanded sweep, or to a bounded per-file pass. So dropping
+// the field from the SHARD query no longer loses anything — it just moves
+// where the number comes from — and the cost of refusing to shard is real:
+// on a 193,915-item library it is ~39 sequential pages instead of ~40
+// concurrent ones, which was a large slice of an observed 80-minute scan.
+//
+// The safety property that must survive any future edit: versionFieldIncluded
+// === false is a HARD obligation on the caller to escalate (or warn). It must
+// never quietly mean "this library has no version history".
 async function probeMaxIdAndFields(
   client: SpApiClient,
   siteUrl: string,
   library: LibraryInfo,
   signal?: AbortSignal,
 ): Promise<FieldProbe | undefined> {
-  if (signal?.aborted) return undefined;
-  const fields = `${BASE_FIELDS},${SIZE_FIELDS},${VERSION_FIELD},${VERSION_LABEL_FIELD}`;
-  try {
-    const data = await client.getJson(probeUrl(siteUrl, library.id!, fields), true);
-    const rows = valueArray(data);
-    if (rows.length === 0) return { maxId: 0, fields }; // empty library
-    const id = Number(rows[0].Id);
-    if (!isFinite(id)) return undefined;
-    return { maxId: id, fields };
-  } catch {
-    return undefined;
+  const attempts: { fields: string; versionFieldIncluded: boolean }[] = [
+    { fields: `${BASE_FIELDS},${SIZE_FIELDS},${VERSION_FIELD},${VERSION_LABEL_FIELD}`, versionFieldIncluded: true },
+    { fields: `${BASE_FIELDS},${SIZE_FIELDS},${VERSION_LABEL_FIELD}`, versionFieldIncluded: false },
+  ];
+  for (let i = 0; i < attempts.length; i++) {
+    if (signal?.aborted) return undefined;
+    const { fields, versionFieldIncluded } = attempts[i];
+    try {
+      const data = await client.getJson(probeUrl(siteUrl, library.id!, fields), true);
+      const rows = valueArray(data);
+      if (rows.length === 0) return { maxId: 0, fields, versionFieldIncluded }; // empty library
+      const id = Number(rows[0].Id);
+      if (!isFinite(id)) return undefined;
+      return { maxId: id, fields, versionFieldIncluded };
+    } catch (err: any) {
+      // Only a field-shape problem is worth retrying with fewer fields.
+      // Anything else — throttling exhausted, permissions, the $orderby/$filter
+      // combination itself being rejected — will fail identically the second
+      // time, and means the ID-range technique doesn't work on this list at
+      // all. Give up on sharding rather than doubling the probe cost.
+      const status = /HTTP (\d+)/.exec(err?.message ?? '')?.[1];
+      if (status !== '400') {
+        // eslint-disable-next-line no-console
+        console.warn(
+          `[SmartStorageAnalyzer] ${library.title}: shard probe failed, sharding disabled for ` +
+          `this library — ${err?.message ?? String(err)}`,
+        );
+        return undefined;
+      }
+      // Log the FULL body of the first (version-field-bearing) 400. That body
+      // is the only thing distinguishing the two very different causes:
+      //   "The field or property 'SMTotalFileStreamSize' does not exist"
+      //     -> Storage Metrics isn't projectable on this list at all
+      //   an $expand/$orderby/expression complaint
+      //     -> the FIELD is fine, the query SHAPE is not
+      // This was a bare `catch {}` for a long time, which is precisely why
+      // that question went unanswered through several rounds of debugging.
+      if (i === 0) {
+        // eslint-disable-next-line no-console
+        console.warn(
+          `[SmartStorageAnalyzer] ${library.title}: shard probe rejected the version field (400) — ` +
+          `${err?.message ?? String(err)}`,
+        );
+      }
+    }
   }
+  return undefined;
 }
 
 function shardUrl(siteUrl: string, listId: string, fields: string, idGreaterThan: number, idAtMost: number): string {
@@ -396,59 +489,6 @@ async function fetchLibraryItemsSharded(
   return canaryRows.concat(...shardResults);
 }
 
-// Per-file fallback for a list that genuinely doesn't expose
-// SMTotalFileStreamSize (Storage Metrics isn't active for every list/site —
-// confirmed elsewhere by the bulk field 400ing in every query shape tried,
-// not just when combined with $orderby). This is the original, pre-bulk-sweep
-// approach: /Versions excludes the current version, so it's exactly the
-// retained history, and its count is free from the same call that fetches
-// size.
-async function fetchVersionInfo(
-  client: SpApiClient,
-  siteUrl: string,
-  fileServerRelativeUrl: string,
-): Promise<{ sizeBytes: number; count: number }> {
-  const url = `${siteUrl}/_api/web/GetFileByServerRelativePath(decodedUrl='${encodeURIComponent(
-    odata(fileServerRelativeUrl),
-  )}')/Versions?$select=Size`;
-  const versions = await client.getJsonPaged(url);
-  return {
-    sizeBytes: versions.reduce((sum, v) => sum + Number(v.Size ?? 0), 0),
-    count: versions.length,
-  };
-}
-
-// Fills in versionSizeBytes/versionCountApprox on every FILE row via the
-// per-file fallback above, mutating `items` in place. Runs at half
-// scanConcurrency (like the pre-rewrite versionQueue did) so opting into
-// this doesn't multiply the bulk sweep's own request volume on top of
-// itself — it already costs one extra request per file, which is enough.
-async function fillMissingVersionSizes(
-  client: SpApiClient,
-  siteUrl: string,
-  items: FlatItem[],
-  signal: AbortSignal | undefined,
-  onSkipped: (() => void) | undefined,
-): Promise<void> {
-  const files = items.filter((i) => !i.isFolder);
-  if (files.length === 0) return;
-  const concurrency = Math.max(1, Math.floor(client.scanConcurrency / 2));
-  await client.runConcurrent(
-    files.map((file) => async () => {
-      if (signal?.aborted) return undefined;
-      try {
-        const info = await fetchVersionInfo(client, siteUrl, file.fileRef);
-        file.versionSizeBytes = info.sizeBytes;
-        file.versionCountApprox = info.count;
-      } catch {
-        onSkipped?.();
-      }
-      return undefined;
-    }),
-    concurrency,
-  );
-}
-
 // One flat sweep of a library. Resolves with every item (files AND folders);
 // throws LibraryFetchError if the library can't be enumerated.
 //
@@ -476,7 +516,14 @@ export async function fetchLibraryItems(
     if (probe && probe.maxId > 0) {
       try {
         const rows = await fetchLibraryItemsSharded(client, siteUrl, library, probe, options);
-        if (rows) return rows.map(toItem);
+        if (rows) {
+          // The shard query had to drop the version field to work. That is now
+          // recoverable (the caller escalates via versionSizes.ts) rather than
+          // the silent data loss it used to be — but ONLY because the caller is
+          // told. See FieldProbe.versionFieldIncluded.
+          if (!probe.versionFieldIncluded) options?.onVersionFieldUnavailable?.();
+          return rows.map(toItem);
+        }
         // undefined: the canary shard failed — the ID-filter technique isn't
         // safe to use on this tenant. Fall through to the plain sequential
         // sweep below rather than sharding.
@@ -513,21 +560,10 @@ export async function fetchLibraryItems(
         options?.onProgress,
       );
       const items = raw.map(toItem);
-      if (i > 0) {
-        if (options?.includeVersionHistory) {
-          // The bulk field isn't selectable on this list at all — fetch
-          // each file's real version history instead of silently reporting
-          // none. This is the expensive path (one request per file), only
-          // reached because the user explicitly opted in.
-          await fillMissingVersionSizes(client, siteUrl, items, options?.signal, options?.onVersionSkipped);
-        } else {
-          // eslint-disable-next-line no-console
-          console.warn(
-            `[SmartStorageAnalyzer] ${library.title}: version-history size unavailable on this list ` +
-            '— sizes exclude retained versions for this library.',
-          );
-        }
-      }
+      // The reduced field set won, so nothing here carries inline version
+      // size. Tell the caller, which owns the escalation decision (and, when
+      // version history wasn't requested at all, the warning).
+      if (i > 0) options?.onVersionFieldUnavailable?.();
       return items;
     } catch (err: any) {
       lastError = err;
@@ -536,6 +572,18 @@ export async function fetchLibraryItems(
       // second time, so surface it immediately instead of doubling the cost.
       const status = /HTTP (\d+)/.exec(err?.message ?? '')?.[1];
       if (status !== '400') break;
+      // Log the body on the FIRST attempt only — that's the one carrying the
+      // version field, so its message is what says whether the field is
+      // absent from the list or merely incompatible with this query's shape.
+      // The status alone can't distinguish those, and they lead to completely
+      // different fallback strategies (see versionSizes.ts).
+      if (i === 0) {
+        // eslint-disable-next-line no-console
+        console.warn(
+          `[SmartStorageAnalyzer] ${library.title}: full field set rejected (400) — ` +
+          `${err?.message ?? String(err)}`,
+        );
+      }
     }
   }
 

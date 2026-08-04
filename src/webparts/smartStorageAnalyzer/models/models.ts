@@ -6,6 +6,17 @@ export enum CandidateTier {
   VeryStale = 'VeryStale',
 }
 
+// How hard to work for version-history size on a library where no BULK
+// mechanism for it exists and the only option left is one request per file
+// (see services/sp/versionSizes.ts). Both modes behave identically whenever a
+// bulk mechanism does work — which is the common case — so this only bites on
+// lists where SharePoint won't project SMTotalFileStreamSize at all.
+//
+// Declared here rather than in versionSizes.ts because listItems.ts,
+// fileWalk.ts and the UI all need it, and routing the type through the module
+// that also owns FlatItem would make those files circularly dependent.
+export type VersionScanMode = 'quick' | 'full';
+
 export interface LibraryInfo {
   title: string;
   // List GUID. Addressing the list by id rather than title for the bulk
@@ -88,10 +99,14 @@ export interface ScanOptions {
   staleDays: number;
   veryStaleDays: number;
   scanConcurrency: number;
-  // Opt-in: fetches each file's version history (SP.FileVersion.Size) and
-  // sums it separately from the current file size. Requires an extra REST
-  // call per file, so it roughly doubles request volume and scan time.
+  // Opt-in: collect version-history size alongside current file size. Usually
+  // free (it rides along in the bulk item sweep), but on a list where
+  // SharePoint won't project the metrics field it escalates — see
+  // versionScanMode and services/sp/versionSizes.ts.
   includeVersionHistory: boolean;
+  // Only consulted when includeVersionHistory is true AND the escalation
+  // reaches its per-file last resort. Defaults to 'quick' at the call site.
+  versionScanMode?: VersionScanMode;
   // Cooperative cancellation only: checked between queued tasks/libraries/
   // sites, not passed into in-flight HTTP requests. A scan can be many
   // minutes long with no other way to stop it short of leaving the page.
@@ -115,6 +130,17 @@ export interface ScanProgress {
   // computed, and callers must treat that as "no estimate available" rather
   // than "0 items expected".
   totalItemsHint?: number;
+  // Which phase of a library's scan this update is about. The two phases
+  // measure DIFFERENT units (items read vs files measured), so the UI must
+  // scope its progress bar and rate estimate to one phase at a time rather
+  // than averaging across them — see StorageReportView's ETA.
+  //
+  // 'versions' only ever appears for the per-file escalation; the bulk
+  // strategies finish in a handful of requests and never report a phase.
+  phase?: 'items' | 'versions';
+  // Progress within a 'versions' phase. Both undefined outside it.
+  versionsDone?: number;
+  versionsTotal?: number;
 }
 
 export interface StorageReportSummary {
@@ -138,12 +164,27 @@ export interface StorageReportSummary {
   // with thousands of failures doesn't bloat the stored report; skippedFolders
   // above is always the true, uncapped count.
   skippedFolderDetails?: { url: string; error: string }[];
-  // Per-file version-history fetches that failed (only possible via the
-  // per-file /Versions fallback in listItems.ts, engaged when a list's bulk
-  // SMTotalFileStreamSize field isn't selectable at all and
-  // includeVersionHistory is on) — kept in-scope rather than aborting, same
-  // as skippedFolders/skippedSites above.
+  // Version-history measurements that were ATTEMPTED AND FAILED (throttling
+  // exhausted, transient error) during the per-file escalation — kept
+  // in-scope rather than aborting, same as skippedFolders/skippedSites above.
+  // Retrying, or lowering concurrency, can genuinely help these.
   skippedVersions?: number;
+  // Version-history measurements that were NEVER ATTEMPTED: Quick mode's
+  // per-library budget ran out, the scan was canceled mid-pass, or no
+  // mechanism for version size worked on that list at all.
+  //
+  // Deliberately separate from skippedVersions. Conflating the two would tell
+  // the user to retry or lower concurrency for a condition that retrying
+  // cannot change — the fix here is switching to a Full scan, or nothing.
+  unmeasuredVersions?: number;
+  // Which mechanism actually produced the version numbers, for the libraries
+  // that needed an escalation ('items-side-channel', 'per-file', 'none', …).
+  // Diagnostic: it is the difference between a ~40-request answer and a
+  // ~194,000-request one, and the user cannot otherwise tell which they got.
+  versionSizeStrategy?: string;
+  // Which mode this scan ran in, so a report loaded from history explains its
+  // own numbers rather than being read against the current UI selection.
+  versionScanMode?: VersionScanMode;
   // Sum of FileEntry.versionSizeBytes across all entries. Only meaningful
   // when versionHistoryIncluded is true — see that field's comment.
   totalVersionSizeBytes?: number;
@@ -158,7 +199,8 @@ export interface StoredReport {
   id: string;
   timestamp: number;
   siteUrl: string;
-  options: Pick<ScanOptions, 'includeSubsites' | 'staleDays' | 'veryStaleDays' | 'includeVersionHistory'>;
+  options: Pick<ScanOptions,
+    'includeSubsites' | 'staleDays' | 'veryStaleDays' | 'includeVersionHistory' | 'versionScanMode'>;
   summary: StorageReportSummary;
   entries: FileEntry[];
   // Set when `entries` holds only stale/very-stale rows because the full
