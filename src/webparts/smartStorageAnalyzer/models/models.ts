@@ -8,7 +8,18 @@ export enum CandidateTier {
 
 export interface LibraryInfo {
   title: string;
+  // List GUID. Addressing the list by id rather than title for the bulk
+  // item query (listItems.ts) avoids escaping problems with titles
+  // containing quotes/ampersands, and survives a library being renamed
+  // mid-scan.
+  id?: string;
   serverRelativeUrl: string;
+  // True for the synthetic "Recycle Bin" pseudo-library (recycleBin.ts) —
+  // not a real SharePoint list, so it has no `id` and is never scanned via
+  // listItems.ts. Consumers branch on this to route to the Recycle Bin's own
+  // fetch path instead, and to exclude it from "pick a default library"
+  // logic (pickDefaultLibrary/findNamedDefault in libraryStats.ts).
+  isRecycleBin?: boolean;
   itemCount?: number;
   totalSizeBytes?: number;
   sizeSource?: 'storageMetrics' | 'estimate' | 'unknown';
@@ -34,12 +45,12 @@ export interface FolderStorageNode {
   // the list view threshold — and guessing at it in the UI ("likely
   // throttling") sends people to fix the wrong thing.
   sizeErrorMessage?: string;
-  // The live walk stopped at its deadline (or, rarely, a folder listing hit
-  // its own page-count safety valve), so totalSizeBytes/fileCount are a
-  // floor ("at least this much") rather than exact. Distinct from
-  // sizeSource === 'error': this is a real, usable measurement — just
-  // deliberately incomplete to keep one folder-open from walking a whole
-  // archive (see FALLBACK_WALK_DEADLINE_MS in storageMetrics.ts).
+  // The walk was canceled partway (or, rarely, a folder listing hit its own
+  // page-count safety valve), so totalSizeBytes/fileCount are a floor ("at
+  // least this much") rather than exact. Distinct from sizeSource ===
+  // 'error': this is a real, usable measurement — just deliberately
+  // incomplete because the user (or a listing limit) stopped it early. See
+  // WalkOptions.signal in storageMetrics.ts.
   sizeApproximate?: boolean;
   children: FolderStorageNode[];
   hasChildren: boolean;
@@ -92,6 +103,18 @@ export interface ScanProgress {
   scanned: number;
   libsDone: number;
   libsTotal: number;
+  // Running count of raw items (files AND folders) read across every
+  // library so far this scan — the same unit totalItemsHint below is in, so
+  // the two divide cleanly into a completion fraction/ETA. Distinct from
+  // `scanned`, which counts FILES only (what the UI reports as progress),
+  // since a library's raw read includes folder rows too.
+  itemsFetched?: number;
+  // Sum of LibraryInfo.itemCount across every library this scan will visit,
+  // known once site + library discovery finishes. A hint, not a guarantee —
+  // ItemCount can be stale — so it's undefined (not 0) when it couldn't be
+  // computed, and callers must treat that as "no estimate available" rather
+  // than "0 items expected".
+  totalItemsHint?: number;
 }
 
 export interface StorageReportSummary {
@@ -115,8 +138,11 @@ export interface StorageReportSummary {
   // with thousands of failures doesn't bloat the stored report; skippedFolders
   // above is always the true, uncapped count.
   skippedFolderDetails?: { url: string; error: string }[];
-  // Per-file version-history fetch failures (kept in-scope rather than
-  // aborting the scan) — see skippedFolders/skippedSites above.
+  // Per-file version-history fetches that failed (only possible via the
+  // per-file /Versions fallback in listItems.ts, engaged when a list's bulk
+  // SMTotalFileStreamSize field isn't selectable at all and
+  // includeVersionHistory is on) — kept in-scope rather than aborting, same
+  // as skippedFolders/skippedSites above.
   skippedVersions?: number;
   // Sum of FileEntry.versionSizeBytes across all entries. Only meaningful
   // when versionHistoryIncluded is true — see that field's comment.

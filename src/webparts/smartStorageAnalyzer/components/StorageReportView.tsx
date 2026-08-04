@@ -30,7 +30,7 @@ import { ReportHistoryService } from '../services/ReportHistoryService';
 import { CandidateTier, FileEntry, ScanProgress, StorageReportSummary, StoredReport } from '../models/models';
 import { StorageTable, StorageTableColumn } from './shared/StorageTable';
 import { TierLegend } from './shared/Treemap';
-import { formatBytes, formatAge } from './shared/formatBytes';
+import { formatBytes, formatAge, formatDuration, formatElapsed } from './shared/formatBytes';
 import { tierColor, tierLabel } from './shared/tierBadge';
 import { diffReports } from '../utils/reportDiff';
 
@@ -314,7 +314,7 @@ export const StorageReportView: React.FC<StorageReportViewProps> = ({
       render: (e: FileEntry) => <span>{e.versionSizeBytes !== undefined ? formatBytes(e.versionSizeBytes) : '—'}</span>,
     }, {
       key: 'versionCount',
-      header: 'Version Count',
+      header: 'Version Count (est.)',
       align: 'right' as const,
       sortValue: (e: FileEntry) => e.versionCount ?? -1,
       render: (e: FileEntry) => <span>{e.versionCount !== undefined ? e.versionCount : '—'}</span>,
@@ -375,6 +375,21 @@ export const StorageReportView: React.FC<StorageReportViewProps> = ({
   // "Site URL" row (see excel.export's siteUrl param).
   const effectiveSiteUrl = viewedReport?.siteUrl ?? siteUrl;
 
+  // Estimated seconds remaining, from the running item-fetch rate projected
+  // across the still-unfetched portion of totalItemsHint (sum of every
+  // library's own ItemCount — see storageScan.ts). Held back until there's
+  // enough signal to not be wildly wrong: under a few seconds elapsed, or
+  // before any items have actually been read, the rate is either undefined
+  // or dominated by fixed per-request overhead rather than real throughput.
+  const etaSeconds = React.useMemo(() => {
+    if (!progress?.totalItemsHint || elapsed < 3) return null;
+    const done = progress.itemsFetched ?? 0;
+    if (done <= 0) return null;
+    const rate = done / elapsed;
+    if (rate <= 0) return null;
+    return Math.max(0, progress.totalItemsHint - done) / rate;
+  }, [progress, elapsed]);
+
   const partialWarnings: string[] = [];
   if (summary) {
     const skippedFolders = summary.skippedFolders ?? 0;
@@ -385,11 +400,11 @@ export const StorageReportView: React.FC<StorageReportViewProps> = ({
     if (skippedSites > 0) {
       partialWarnings.push(`${skippedSites} subsite${skippedSites === 1 ? '' : 's'} could not be accessed and ${skippedSites === 1 ? 'was' : 'were'} skipped`);
     }
-    // This was previously computed and stored but never surfaced anywhere —
-    // when every per-file version fetch fails (e.g. sustained throttling on
-    // a large scan), the version-history tile/column silently show 0 B / "—"
-    // for everything with no indication anything went wrong. Indistinguishable
-    // from "this site genuinely has no version history" unless called out.
+    // Per-file version fetches (the fallback for a list where the bulk
+    // SMTotalFileStreamSize field isn't selectable) that failed — without
+    // this, a run with heavy throttling would silently show 0 B / "—" for
+    // affected files with no indication anything went wrong, indistinguishable
+    // from "this file genuinely has no version history".
     const skippedVersions = summary.skippedVersions ?? 0;
     if (summary.versionHistoryIncluded && skippedVersions > 0) {
       partialWarnings.push(
@@ -493,7 +508,7 @@ export const StorageReportView: React.FC<StorageReportViewProps> = ({
         <Checkbox label="Include subsites" checked={subsites} onChange={(_, d) => setSubsites(!!d.checked)} disabled={scanning} />
         <Checkbox label="Include hidden/system libraries" checked={hidden} onChange={(_, d) => setHidden(!!d.checked)} disabled={scanning} />
         <Checkbox
-          label="Include version history size (slower)"
+          label="Include version history size"
           checked={includeVersions}
           onChange={(_, d) => setIncludeVersions(!!d.checked)}
           disabled={scanning}
@@ -509,15 +524,24 @@ export const StorageReportView: React.FC<StorageReportViewProps> = ({
       </div>
       {includeVersions && (
         <Text style={{ display: 'block', color: tokens.colorNeutralForeground3, fontSize: tokens.fontSizeBase200, marginTop: `-${tokens.spacingVerticalS}`, marginBottom: tokens.spacingVerticalM }}>
-          Version history requires an extra request per file and will significantly increase scan time.
+          Version history size is exact; Version Count is an estimate derived from the file's current
+          version number, so it can run slightly high on a library with a configured version-retention
+          limit (it never runs low). Usually adds no extra scan time, except on a list where version
+          history isn't available as a bulk field — that one falls back to a slower, one-request-per-file
+          measurement.
         </Text>
       )}
 
       {scanning && progress && (
         <div style={{ marginBottom: tokens.spacingVerticalL }}>
-          <ProgressBar value={progress.libsTotal > 0 ? progress.libsDone / progress.libsTotal : undefined} />
+          <ProgressBar
+            value={progress.totalItemsHint
+              ? Math.min(1, (progress.itemsFetched ?? 0) / progress.totalItemsHint)
+              : (progress.libsTotal > 0 ? progress.libsDone / progress.libsTotal : undefined)}
+          />
           <Text style={{ display: 'block', marginTop: tokens.spacingVerticalXS, color: tokens.colorNeutralForeground3, fontSize: tokens.fontSizeBase200 }}>
-            {progress.message} — {progress.scanned} files scanned — {elapsed.toFixed(0)}s elapsed
+            {progress.message} — {progress.scanned} files scanned — {formatElapsed(elapsed)} elapsed
+            {etaSeconds != null && ` — ~${formatDuration(etaSeconds)} remaining`}
           </Text>
         </div>
       )}
@@ -593,7 +617,18 @@ export const StorageReportView: React.FC<StorageReportViewProps> = ({
 
           <TierLegend staleDays={effectiveStaleDays} veryStaleDays={effectiveVeryStaleDays} showFolder={false} />
 
-          <StorageTable rows={filteredEntries} columns={columns} getRowKey={(e) => e.serverRelativeUrl} defaultSortKey="size" />
+          <StorageTable
+            rows={filteredEntries}
+            columns={columns}
+            getRowKey={(e) => e.serverRelativeUrl}
+            defaultSortKey="size"
+            // A full-site scan can return hundreds of thousands of rows —
+            // rendering all of them at once is what makes the results table
+            // slow to paint and heavy to scroll. Export (Excel/CSV) is
+            // unaffected — both already export the full filteredEntries
+            // array regardless of what's paged into view here.
+            pageSize={200}
+          />
         </>
       )}
 

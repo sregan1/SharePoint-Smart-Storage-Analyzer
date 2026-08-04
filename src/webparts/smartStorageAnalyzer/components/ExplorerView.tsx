@@ -14,7 +14,7 @@ import {
   makeStyles,
   tokens,
 } from '@fluentui/react-components';
-import { Document24Regular, Folder24Regular, ChevronRight16Regular, DocumentArrowDown24Regular, Info16Regular, Warning16Regular, ArrowClockwise20Regular, ArrowLeft24Regular } from '@fluentui/react-icons';
+import { Document24Regular, Folder24Regular, ChevronRight16Regular, DocumentArrowDown24Regular, Info16Regular, Warning16Regular, ArrowClockwise20Regular, ArrowLeft24Regular, Delete16Regular } from '@fluentui/react-icons';
 
 import { StorageAnalyzerService } from '../services/StorageAnalyzerService';
 import { ExcelExportService } from '../services/ExcelExportService';
@@ -117,7 +117,6 @@ export const ExplorerView: React.FC<ExplorerViewProps> = ({
 
   const [selectedUrl, setSelectedUrl] = React.useState<string>('');
   const [childrenLoading, setChildrenLoading] = React.useState(false);
-  const [childrenProgress, setChildrenProgress] = React.useState<{ done: number; total: number } | null>(null);
   const [cacheVersion, setCacheVersion] = React.useState(0);
   const childrenCache = React.useRef<Map<string, FolderStorageNode[]>>(new Map());
   const parentOf = React.useRef<Map<string, { name: string; url: string }>>(new Map());
@@ -131,10 +130,10 @@ export const ExplorerView: React.FC<ExplorerViewProps> = ({
   // the folder now selected?" — a plain `filesLoading` flag can't, because it
   // is set by an effect that runs a render AFTER selectedUrl changes.
   const [loadedFilesKey, setLoadedFilesKey] = React.useState('');
-  // Seconds spent on the current load, ticked once a second purely so the
-  // loading UI always has something visibly moving. Folder-size progress can
-  // legitimately sit on the same number for minutes (each unit of progress is
-  // one child's ENTIRE recursive subtree), which reads as a frozen app.
+  // Seconds spent on the current load, ticked purely so the loading UI always
+  // has something visibly moving. The item counter advances once per
+  // 5,000-item page, which on a throttled tenant can be a long gap — long
+  // enough to read as a frozen app without a second-by-second signal.
   const [loadElapsed, setLoadElapsed] = React.useState(0);
   const [throttled, setThrottled] = React.useState(false);
   // Bumped by Refresh. Included in the load effects' deps because clearing the
@@ -142,6 +141,77 @@ export const ExplorerView: React.FC<ExplorerViewProps> = ({
   // cache hit, so a stale/failed result would otherwise stick for the whole
   // session no matter how many times the user re-navigated to it.
   const [refreshToken, setRefreshToken] = React.useState(0);
+
+  // ── Cancellation / live scan progress ────────────────────────────────────
+  // ONE controller for whichever measurement is in flight (root rollups or a
+  // folder drill-down) — a single controller enforces "one measurement at a
+  // time" and gives Cancel an unambiguous target without needing to know
+  // which view is loading.
+  const scanAbortRef = React.useRef<AbortController | null>(null);
+  // Written by the data layer's throttled onWalkProgress (potentially
+  // hundreds of times a second on a huge site); flushed into state by the
+  // existing elapsed-time ticker rather than driving a render per page.
+  const itemsReadRef = React.useRef(0);
+  const [itemsRead, setItemsRead] = React.useState(0);
+  const [cancelRequested, setCancelRequested] = React.useState(false);
+  // Keyed by scan target ('' = site root, else a folder url) so a canceled
+  // scan's banner follows that specific folder/root across navigation rather
+  // than a lone boolean bleeding onto whatever is opened next.
+  const [canceledKeys, setCanceledKeys] = React.useState<ReadonlySet<string>>(new Set());
+  // Restarts the root rollup scan when the user returns to the site root
+  // after abandoning it mid-flight by drilling into a library.
+  const [rollupsToken, setRollupsToken] = React.useState(0);
+  const [rollupsAbandoned, setRollupsAbandoned] = React.useState(false);
+
+  // Starts a measurement, superseding any in flight (aborting it — not the
+  // same as a user Cancel, see isCurrentScan below). Returns the controller;
+  // callers compare scanAbortRef.current against it to answer "are my
+  // results still wanted?"
+  const beginScan = React.useCallback((key: string): AbortController => {
+    if (scanAbortRef.current) scanAbortRef.current.abort();
+    const ctrl = new AbortController();
+    scanAbortRef.current = ctrl;
+    itemsReadRef.current = 0;
+    setItemsRead(0);
+    setCancelRequested(false);
+    setCanceledKeys((prev) => {
+      if (!prev.has(key)) return prev; // same reference — no re-render
+      const next = new Set(prev);
+      next.delete(key);
+      return next;
+    });
+    return ctrl;
+  }, []);
+
+  // True only while `ctrl` is still THE current scan. False means a newer
+  // scan (or a navigation away) replaced it, so its results belong to a
+  // screen the user has left and must not be written anywhere. This is what
+  // distinguishes "normal completion" and "user canceled" (ref left pointing
+  // at ctrl in both cases) from "superseded/navigated away" (ref points
+  // elsewhere or is null).
+  const isCurrentScan = (ctrl: AbortController): boolean => scanAbortRef.current === ctrl;
+
+  const handleCancel = (): void => {
+    if (!scanAbortRef.current || cancelRequested) return;
+    setCancelRequested(true);
+    // Deliberately does NOT null the ref — staying current is what tells the
+    // settling promise these partials were asked for and should be kept.
+    scanAbortRef.current.abort();
+  };
+
+  // Abort whatever is measuring when the user navigates — a different
+  // folder, library, breadcrumb hop, the Site button, Refresh, or unmount.
+  // Nulling the ref marks the in-flight scan non-current, so its
+  // .then/.finally discard rather than writing into the screen the user has
+  // moved to. Without this, an abandoned walk on a huge library would run
+  // indefinitely (there's no deadline any more), competing for the same
+  // request ceiling as the walk the user is actually waiting on.
+  React.useEffect(() => () => {
+    if (scanAbortRef.current) {
+      scanAbortRef.current.abort();
+      scanAbortRef.current = null;
+    }
+  }, [selectedUrl, libraryUrl, siteUrl, refreshToken]);
 
   // Load the library list once per site, then resolve each library's rollup for
   // the site-root treemap. No default library is auto-selected any more — the
@@ -154,32 +224,72 @@ export const ExplorerView: React.FC<ExplorerViewProps> = ({
   // reloading the folder they're actually looking at.
   React.useEffect(() => { setLibraryUrl(undefined); }, [siteUrl]);
 
+  // Libraries only — split from the rollup effect below so the rollup scan
+  // can be independently re-triggered (e.g. restarted after being abandoned
+  // mid-flight) without re-fetching the library list itself.
   React.useEffect(() => {
     let cancelled = false;
     setLibrariesLoading(true);
-    setRollupsLoading(true);
     // Plain list, not getLibrariesWithStats — sizes come from getLibraryRollups
-    // below (probe-only). getLibrariesWithStats would, on a site with no library
-    // named "Documents", full-walk every library to pick a default by size,
-    // which is the whole-site walk this view is designed to avoid.
+    // below. getLibrariesWithStats would, on a site with no library named
+    // "Documents", full-walk every library to pick a default by size, which
+    // is the whole-site walk this view is designed to avoid.
     sp.getLibraries(siteUrl, false)
       .then((libs) => {
         if (cancelled) return;
         setLibraries(libs);
-        setLibrariesLoading(false);
-        if (libs.length === 0) return;
-        return sp.getLibraryRollups(siteUrl, libs).then((r) => {
-          if (!cancelled) setRollups(r);
-        });
       })
       .catch((err: any) => { if (!cancelled) setError(`Failed to load libraries: ${err?.message ?? String(err)}`); })
-      .finally(() => {
-        if (cancelled) return;
-        setLibrariesLoading(false);
-        setRollupsLoading(false);
-      });
+      .finally(() => { if (!cancelled) setLibrariesLoading(false); });
     return () => { cancelled = true; };
   }, [siteUrl, refreshToken]);
+
+  // Root rollups. Runs after the library list resolves; restarts on Refresh
+  // or when rollupsToken is bumped (see the "restart on return" effect
+  // below). No automatic time/count limit any more — the user cancels via
+  // the Cancel button, and SpApiClient's own throttle governor is what
+  // actually protects the tenant on a large site.
+  React.useEffect(() => {
+    if (librariesLoading) return;
+    if (libraries.length === 0) { setRollupsLoading(false); return; }
+    const ctrl = beginScan('');
+    setRollupsLoading(true);
+    sp.getLibraryRollups(siteUrl, libraries, {
+      signal: ctrl.signal,
+      onWalkProgress: (visited) => { if (visited > itemsReadRef.current) itemsReadRef.current = visited; },
+    })
+      .then((r) => {
+        if (!isCurrentScan(ctrl)) { setRollupsAbandoned(true); return; }
+        setRollups(r);
+        if (ctrl.signal.aborted) setCanceledKeys((prev) => new Set(prev).add(''));
+      })
+      .catch((err: any) => {
+        if (!isCurrentScan(ctrl)) return;
+        setError(`Failed to load libraries: ${err?.message ?? String(err)}`);
+      })
+      .finally(() => {
+        if (!isCurrentScan(ctrl)) return;
+        scanAbortRef.current = null;
+        setCancelRequested(false);
+        setRollupsLoading(false);
+      });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [siteUrl, refreshToken, rollupsToken, libraries, librariesLoading]);
+
+  // Returning to the site root after the library scan was abandoned
+  // mid-flight (the user drilled into a library before it finished) restarts
+  // it — otherwise the root treemap would permanently show whatever partial
+  // set existed at the moment of drilling in, since nothing else would ever
+  // change this effect's deps again. Deliberately NOT triggered by a user
+  // Cancel (that lands in canceledKeys instead, showing a banner rather than
+  // silently restarting) — cancel means stopped, not "retries when I look
+  // away and back".
+  React.useEffect(() => {
+    if (atRoot && rollupsAbandoned) {
+      setRollupsAbandoned(false);
+      setRollupsToken((t) => t + 1);
+    }
+  }, [atRoot, rollupsAbandoned]);
 
   // Reset drill-down state when the selected library changes.
   React.useEffect(() => {
@@ -199,19 +309,39 @@ export const ExplorerView: React.FC<ExplorerViewProps> = ({
 
   const loadChildren = React.useCallback((url: string): void => {
     if (childrenCache.current.has(url)) return;
+    if (!currentLibrary) return; // no library selected — nothing to sweep
+    const ctrl = beginScan(url);
     setChildrenLoading(true);
-    setChildrenProgress(null);
     // The Treemap/List only render once the whole batch is in (see
     // loadingIndicator below), so the per-child callback here only drives
     // the progress counter — a cache hit skips it entirely, going straight
     // to the .then() with the complete result.
-    sp.getFolderChildren(siteUrl, url, (done, total) => { setChildrenProgress({ done, total }); })
+    sp.getFolderChildren(
+      siteUrl,
+      currentLibrary,
+      url,
+      undefined,
+      {
+        signal: ctrl.signal,
+        // Ref only — no setState here. This fires once per 5,000-item page;
+        // the ticker below flushes it into state at a paint-friendly rate.
+        onWalkProgress: (items) => { if (items > itemsReadRef.current) itemsReadRef.current = items; },
+      },
+    )
       .then((children) => {
+        if (!isCurrentScan(ctrl)) return; // superseded/navigated away — drop it
         setError('');
+        // Partials are cached in memory deliberately: the readiness gate
+        // needs *something* in the cache or the loading indicator would spin
+        // forever. canceledKeys is what marks this copy as incomplete rather
+        // than exact (the underlying aggregate cache refuses to keep a
+        // canceled sweep, so Refresh genuinely re-measures).
         childrenCache.current.set(url, children);
         children.forEach((c) => parentOf.current.set(c.serverRelativeUrl, { name: c.name, url }));
+        if (ctrl.signal.aborted) setCanceledKeys((prev) => new Set(prev).add(url));
       })
       .catch((err: any) => {
+        if (!isCurrentScan(ctrl)) return;
         // Still cache [] so this folder doesn't re-fire the load on every
         // render, but surface the failure — silently treating a fetch
         // failure as "this folder is empty" would misreport a permissions
@@ -220,6 +350,8 @@ export const ExplorerView: React.FC<ExplorerViewProps> = ({
         setError(`Failed to load folder contents: ${err?.message ?? String(err)}`);
       })
       .finally(() => {
+        if (!isCurrentScan(ctrl)) return; // do not clobber a newer scan
+        scanAbortRef.current = null;
         // Order matters here: React 17 does not batch state updates made
         // from a promise callback, so each of these setState calls commits
         // as its own separate render. selectedChildren is a useMemo keyed on
@@ -231,18 +363,18 @@ export const ExplorerView: React.FC<ExplorerViewProps> = ({
         // subfolders, or none, until the next render catches up. Bumping
         // cacheVersion first means selectedChildren is already current by
         // the time the render that clears childrenLoading actually happens.
-        setChildrenProgress(null);
+        setCancelRequested(false);
         setCacheVersion((v) => v + 1);
         setChildrenLoading(false);
       });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [siteUrl, libraryUrl]);
+  }, [siteUrl, libraryUrl, currentLibrary, beginScan]);
 
   // Fetch immediate files whenever the selected folder changes, or the
   // version-history toggle changes. Cache key includes the toggle state
   // since raw files fetched with it off never have versionSizeBytes.
   React.useEffect(() => {
-    if (!selectedUrl) return;
+    if (!selectedUrl || !currentLibrary) return;
     const toRows = (files: RawFolderFile[]): FolderFileRow[] => files.map((f) => {
       const ageDays = ageInDays(f.timeLastModified);
       return {
@@ -257,7 +389,11 @@ export const ExplorerView: React.FC<ExplorerViewProps> = ({
         versionCount: f.versionCount,
       };
     });
-    const cacheKey = `${selectedUrl}::${includeVersions}`;
+    // Version history (size and an approximate count) is always included in
+    // the fetch now at no extra cost — see storageMetrics.getFolderFiles —
+    // so the cache key and this effect no longer need to vary by
+    // includeVersions at all; that toggle only controls DISPLAY below.
+    const cacheKey = selectedUrl;
     const cached = filesCache.current.get(cacheKey);
     if (cached) { setSelectedFiles(toRows(cached)); setLoadedFilesKey(cacheKey); return; }
     // Clear the previous folder's rows before setting filesLoading — this
@@ -267,7 +403,7 @@ export const ExplorerView: React.FC<ExplorerViewProps> = ({
     // files against the new (still-empty) folder list.
     setSelectedFiles([]);
     setFilesLoading(true);
-    sp.getFolderFiles(siteUrl, selectedUrl, includeVersions)
+    sp.getFolderFiles(siteUrl, currentLibrary, selectedUrl)
       .then((files) => {
         setError('');
         filesCache.current.set(cacheKey, files);
@@ -287,7 +423,8 @@ export const ExplorerView: React.FC<ExplorerViewProps> = ({
         setLoadedFilesKey(cacheKey);
       })
       .finally(() => setFilesLoading(false));
-  }, [selectedUrl, siteUrl, staleDays, veryStaleDays, includeVersions, refreshToken]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedUrl, siteUrl, currentLibrary, staleDays, veryStaleDays, refreshToken]);
 
   // Ensure the currently selected folder's children are loaded (needed for
   // both the treemap and the list view).
@@ -522,7 +659,7 @@ export const ExplorerView: React.FC<ExplorerViewProps> = ({
       ) : (
         <div style={{ display: 'flex', alignItems: 'center', gap: '8px', justifyContent: 'flex-end' }}>
           {r.sizeApproximate ? (
-            <Tooltip content="At least this much — measuring the full subtree was stopped at this view's request budget to keep one folder-open from scanning an entire archive. Open the folder to measure it further, or raise Concurrent API requests in Settings to measure deeper before stopping." relationship="label">
+            <Tooltip content="At least this much. Measurement was stopped before this folder's subtree was fully counted — open the folder to measure it directly, or use Refresh to measure again." relationship="label">
               <span style={{ minWidth: '64px', textAlign: 'right', cursor: 'help' }}>≥ {formatBytes(r.sizeBytes)}</span>
             </Tooltip>
           ) : (
@@ -551,7 +688,7 @@ export const ExplorerView: React.FC<ExplorerViewProps> = ({
       render: (r: FolderListRow) => <span>{r.kind === 'file' && r.versionSizeBytes !== undefined ? formatBytes(r.versionSizeBytes) : '—'}</span>,
     }, {
       key: 'versionCount',
-      header: 'Version Count',
+      header: 'Version Count (est.)',
       align: 'right' as const,
       sortValue: (r: FolderListRow) => r.versionCount ?? -1,
       render: (r: FolderListRow) => <span>{r.kind === 'file' && r.versionCount !== undefined ? r.versionCount : '—'}</span>,
@@ -615,6 +752,8 @@ export const ExplorerView: React.FC<ExplorerViewProps> = ({
     filesCache.current.clear();
     setLoadedFilesKey('');
     setError('');
+    setCanceledKeys(new Set());
+    setRollupsAbandoned(false);
     setCacheVersion((v) => v + 1);
     setRefreshToken((t) => t + 1);
   };
@@ -629,48 +768,56 @@ export const ExplorerView: React.FC<ExplorerViewProps> = ({
     () => (selectedUrl ? childrenCache.current.has(selectedUrl) : false),
     [selectedUrl, cacheVersion],
   );
-  const filesReady = loadedFilesKey === `${selectedUrl}::${includeVersions}`;
+  const filesReady = loadedFilesKey === selectedUrl;
   const showLoading = atRoot
     ? rollupsLoading
     : !!selectedUrl && (childrenLoading || filesLoading || !childrenReady || !filesReady);
 
-  // Drives the elapsed counter and the throttle notice while loading. Both
-  // exist to guarantee the indicator always has visible motion: without them,
-  // a large library sits on "0 of 240" for minutes (each increment is one
-  // child's whole subtree) and looks indistinguishable from a hang.
+  // Drives the elapsed counter, the throttle notice, and the live
+  // folders-scanned counter while loading. These exist to guarantee the
+  // indicator always has visible motion: without them, a large library sits
+  // on "0 of 240" for minutes (each increment is one child's whole subtree)
+  // and looks indistinguishable from a hang. 500ms rather than 1s so the
+  // folder count visibly moves.
   React.useEffect(() => {
     if (!showLoading) {
       setLoadElapsed(0);
       setThrottled(false);
+      setItemsRead(0);
       return;
     }
     const startedAt = Date.now();
     const id = setInterval(() => {
       setLoadElapsed(Math.floor((Date.now() - startedAt) / 1000));
       setThrottled(sp.isThrottled);
-    }, 1000);
+      setItemsRead(itemsReadRef.current);
+    }, 500);
     return () => clearInterval(id);
   }, [showLoading, sp]);
 
-  // Determinate only once progress has actually advanced. A determinate bar
-  // sitting at value 0 renders as an empty track — visually identical to a
-  // frozen one — so until there's real movement to show, an indeterminate
-  // (animated) bar is the honest and more reassuring choice.
-  const progressValue = childrenProgress && childrenProgress.total > 0 && childrenProgress.done > 0
-    ? childrenProgress.done / childrenProgress.total
-    : undefined;
+  // Always indeterminate now. The sweep pages through a library's items and
+  // SharePoint does not report a total up front, so there is no honest
+  // denominator to draw a determinate bar against — and a determinate bar
+  // guessing at one is worse than an animated bar that admits it doesn't
+  // know. The item counter below carries the real "something is happening"
+  // signal.
+  const loadingStatus = cancelRequested
+    ? 'Stopping — finishing the page already in flight…'
+    : throttled
+      ? 'Paused — SharePoint is throttling requests. Waiting for it to allow more…'
+      : atRoot
+        ? 'Measuring library sizes…'
+        : 'Reading library contents…';
 
-  const loadingStatus = throttled
-    ? 'Paused — SharePoint is throttling requests. Waiting for it to allow more…'
-    : atRoot
-      ? 'Measuring library sizes…'
-      : childrenProgress && childrenProgress.total > 0
-        ? `Measuring folder sizes… ${childrenProgress.done} of ${childrenProgress.total}`
-        : 'Reading folder contents…';
+  // Items, not folders: one flat sweep reads files and folders together, so
+  // the honest unit of progress is items read.
+  const visitedText = itemsRead > 0
+    ? ` — ${itemsRead.toLocaleString()} item${itemsRead === 1 ? '' : 's'} read`
+    : '';
 
   const loadingIndicator = (
     <div style={{ marginTop: tokens.spacingVerticalM }}>
-      <ProgressBar value={progressValue} />
+      <ProgressBar />
       <Text
         style={{
           display: 'block',
@@ -679,11 +826,12 @@ export const ExplorerView: React.FC<ExplorerViewProps> = ({
           color: throttled ? tokens.colorPaletteMarigoldForeground1 : tokens.colorNeutralForeground3,
         }}
       >
-        {loadingStatus} — {loadElapsed}s elapsed
+        {loadingStatus}{visitedText} — {loadElapsed}s elapsed
       </Text>
-      {loadElapsed >= 20 && !throttled && (
+      {loadElapsed >= 20 && !throttled && !cancelRequested && (
         <Text style={{ display: 'block', fontSize: tokens.fontSizeBase200, color: tokens.colorNeutralForeground3 }}>
-          Large libraries can take a while — folder sizes are resolved one subtree at a time.
+          This library is read once, in full — after that, every folder inside it opens instantly.
+          There is no time limit; click Cancel to stop now and keep what has been measured so far.
         </Text>
       )}
     </div>
@@ -704,6 +852,16 @@ export const ExplorerView: React.FC<ExplorerViewProps> = ({
         </MessageBar>
       )}
 
+      {!showLoading && canceledKeys.has(atRoot ? '' : selectedUrl) && (
+        <MessageBar intent="warning" style={{ marginBottom: tokens.spacingVerticalM }}>
+          <MessageBarBody>
+            Measurement canceled — showing what was measured before you stopped. Folders that weren't
+            finished show "≥ size" (a real floor) or "Unknown" (never reached). Use Refresh to measure
+            this view again.
+          </MessageBarBody>
+        </MessageBar>
+      )}
+
       {!showLoading && !atRoot && unknownSizeFolderCount > 0 && (
         <MessageBar intent="warning" style={{ marginBottom: tokens.spacingVerticalM }}>
           <MessageBarBody>
@@ -718,16 +876,16 @@ export const ExplorerView: React.FC<ExplorerViewProps> = ({
         </MessageBar>
       )}
 
-      {/* Reaching this now means even the budgeted fallback walk failed for a
-          library, which is unusual — a stale SharePoint rollup alone no longer
-          lands here (see getLibraryRollups), it produces a "≥" floor instead. */}
+      {/* Reaching this now means the live walk failed for a library, which is
+          unusual — a stale SharePoint rollup alone no longer lands here (see
+          getLibraryRollups), it produces a "≥" floor instead. */}
       {!showLoading && atRoot && unknownRootCount > 0 && (
         <MessageBar intent="info" style={{ marginBottom: tokens.spacingVerticalM }}>
           <MessageBarBody>
             {unknownRootCount} librar{unknownRootCount === 1 ? 'y' : 'ies'} could not be measured and
             show as "Unknown" — most often SharePoint throttling. Try Refresh in a moment, or open the
-            library to measure it directly. Sizes shown as "≥" are real floors, measured as far as this
-            view's request budget allows.
+            library to measure it directly. Sizes shown as "≥" are real floors, measured as far as the
+            scan got.
           </MessageBarBody>
         </MessageBar>
       )}
@@ -747,14 +905,31 @@ export const ExplorerView: React.FC<ExplorerViewProps> = ({
               Site
             </Button>
             {libraries.map((l) => (
-              <Button
-                key={l.serverRelativeUrl}
-                appearance={l.serverRelativeUrl === libraryUrl ? 'primary' : 'secondary'}
-                size="small"
-                onClick={() => setLibraryUrl(l.serverRelativeUrl)}
-              >
-                {l.title}
-              </Button>
+              l.isRecycleBin ? (
+                <Tooltip
+                  key={l.serverRelativeUrl}
+                  content="First-stage Recycle Bin — items an end user can still restore. Items purged to the site collection Recycle Bin require Site Collection Administrator access and aren't included."
+                  relationship="label"
+                >
+                  <Button
+                    appearance={l.serverRelativeUrl === libraryUrl ? 'primary' : 'secondary'}
+                    size="small"
+                    icon={<Delete16Regular />}
+                    onClick={() => setLibraryUrl(l.serverRelativeUrl)}
+                  >
+                    {l.title}
+                  </Button>
+                </Tooltip>
+              ) : (
+                <Button
+                  key={l.serverRelativeUrl}
+                  appearance={l.serverRelativeUrl === libraryUrl ? 'primary' : 'secondary'}
+                  size="small"
+                  onClick={() => setLibraryUrl(l.serverRelativeUrl)}
+                >
+                  {l.title}
+                </Button>
+              )
             ))}
           </div>
 
@@ -784,33 +959,44 @@ export const ExplorerView: React.FC<ExplorerViewProps> = ({
             {!atRoot && (
               <div style={{ display: 'flex', alignItems: 'center', gap: tokens.spacingHorizontalXS }}>
                 <Checkbox
-                  label="Include version history size (slower)"
+                  label="Include version history size"
                   checked={includeVersions}
                   onChange={(_, d) => setIncludeVersions(!!d.checked)}
                 />
                 <Tooltip
-                  content="Only individual files get a real version-history number — SharePoint's folder size rollup has no recursive version-history total, so a folder's Size never includes its files' version history, on or off."
+                  content="Only individual files get a real version-history number — SharePoint's folder size rollup has no recursive version-history total, so a folder's Size never includes its files' version history, on or off. Version History Size is exact; Version Count is an estimate based on the file's current version number, so it can run slightly high (never low) on a library with a configured version-retention limit."
                   relationship="label"
                 >
                   <Info16Regular style={{ cursor: 'help', color: tokens.colorNeutralForeground3 }} />
                 </Tooltip>
               </div>
             )}
-            <Tooltip
-              content="Discard cached sizes and measure this view again. Use this to retry folders showing Unknown or ≥, or after content has changed — sizes are otherwise cached for about 10 minutes."
-              relationship="label"
-            >
-              <Button
-                icon={<ArrowClockwise20Regular />}
-                appearance="subtle"
-                size="small"
-                onClick={handleRefresh}
-                disabled={showLoading}
-                style={{ marginLeft: atRoot ? 0 : 'auto' }}
+            <div style={{ display: 'flex', alignItems: 'center', gap: tokens.spacingHorizontalS, marginLeft: atRoot ? 0 : 'auto' }}>
+              <Tooltip
+                content="Discard cached sizes and measure this view again. Use this to retry folders showing Unknown or ≥, or after content has changed — sizes are otherwise cached for about 10 minutes."
+                relationship="label"
               >
-                Refresh
-              </Button>
-            </Tooltip>
+                <Button
+                  icon={<ArrowClockwise20Regular />}
+                  appearance="subtle"
+                  size="small"
+                  onClick={handleRefresh}
+                  disabled={showLoading}
+                >
+                  Refresh
+                </Button>
+              </Tooltip>
+              {showLoading && (
+                <Tooltip
+                  content="Stop measuring now and keep what has been measured so far. Folders that weren't finished show “≥ size” or “Unknown”."
+                  relationship="label"
+                >
+                  <Button appearance="secondary" size="small" onClick={handleCancel} disabled={cancelRequested}>
+                    {cancelRequested ? 'Canceling…' : 'Cancel'}
+                  </Button>
+                </Tooltip>
+              )}
+            </div>
           </div>
 
           {viewMode === 'treemap' ? (

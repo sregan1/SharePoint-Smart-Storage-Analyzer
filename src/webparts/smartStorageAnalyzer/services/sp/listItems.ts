@@ -1,0 +1,574 @@
+import { SpApiClient, valueArray, odata } from './spCore';
+import { LibraryInfo } from '../../models/models';
+
+// Bulk, FLAT enumeration of a document library's contents.
+//
+// This replaces the recursive folder walk that used to back both the Storage
+// Report and the Explorer's fallback sizing. That walk cost 2 requests per
+// FOLDER (Files + Folders) regardless of how few files the folder held, so
+// its cost scaled with the shape of the tree rather than the amount of
+// content: on a real 2.3TB archive it managed roughly 4 files/second, which
+// works out to hours for a single library.
+//
+// The /items endpoint is not folder-scoped — it returns every item in the
+// list, across every folder, in ID order. So one paged sweep replaces the
+// entire traversal:
+//
+//   100,000 files in a deep tree
+//     recursive walk : 2 x folder count -> tens of thousands of requests
+//     flat sweep     : ceil(items / 5000) -> ~20-25 requests
+//
+// Folder sizes are then derived from these rows client-side (see
+// folderAggregate.ts) at no additional request cost at all.
+export const ITEMS_PAGE_SIZE = 5000;
+
+// Deliberately NO $filter and NO $orderby.
+//
+// Both are evaluated across the whole list before paging is applied, so on a
+// list past the 5,000-item view threshold either one throws
+// SPQueryThrottledException ("the attempted operation is prohibited because
+// it exceeds the list view threshold") — precisely on the large libraries
+// this exists to handle. An unfiltered, unordered query pages fine at any
+// size because the implicit order is by ID, which is always indexed.
+//
+// So: fetch everything and split files from folders in memory on FSObjType
+// (0 = file, 1 = folder). The folder rows are not waste — the treemap needs
+// the folder list anyway, and getting it here means never asking for it
+// separately.
+const BASE_FIELDS = 'FileRef,FileLeafRef,FSObjType,Modified,Created,AuthorId,EditorId';
+// File size comes from the File/Length navigation property, NOT the
+// File_x0020_Size list column. File_x0020_Size looks like the obvious choice
+// (it's the "File Size" column visible in the UI) but it's a Computed-type
+// field, and SPO's /items REST endpoint frequently rejects a $select naming
+// it outright — confirmed against a real tenant, where every attempt
+// (with and without SMTotalFileStreamSize) 400'd with "The field or property
+// 'File_x0020_Size' does not exist." File/Length is the field the classic
+// Files/ collection has always exposed (folderApi's Files?$select=Length in
+// the old walk) and is reliable via $expand=File here too. A folder row's
+// File is null, which resolves to size 0 — exactly what's wanted, since
+// folders are zero-weight containers regardless (see folderAggregate.ts).
+const SIZE_EXPAND = 'File';
+const SIZE_FIELDS = 'File/Length';
+// SMTotalFileStreamSize (current + retained versions) is storage-metrics
+// metadata, not a base document-library field, so it's the first thing
+// dropped if the full $select is rejected — the size field above is not
+// negotiable, since without it there is nothing to report at all.
+const VERSION_FIELD = 'SMTotalFileStreamSize';
+// OData__UIVersionString is REST's escaped name for the internal
+// _UIVersionString field — a standard column on every list, giving the
+// current version label (e.g. "5.0", or "12.3" if minor/draft versions are
+// in play). The integer part is the major version number; a file at major
+// version N has (N-1) prior retained major versions, which is the same
+// quantity the per-file .../Versions collection counts (that collection
+// also excludes the current version). This gets version COUNT from the same
+// bulk request that already gets size, at zero extra cost — replacing what
+// used to be a separate request PER FILE (fetchVersionInfo, now removed).
+//
+// It is an approximation, not identical to querying /Versions directly:
+//   - Minor/draft versions (the fractional part) aren't counted.
+//   - A library with a configured version-retention LIMIT keeps incrementing
+//     the version number even after old versions are purged from storage, so
+//     this can OVERSTATE the true retained count in that specific case — it
+//     never understates. Size (SMTotalFileStreamSize, above) is unaffected
+//     either way: it reflects real storage regardless of how count is
+//     derived, so the number that actually matters for a storage audit
+//     stays exact. Confirmed acceptable trade-off: the alternative was one
+//     request per file, which took over 3 hours and was still incomplete on
+//     a real 192,978-item library.
+const VERSION_LABEL_FIELD = 'OData__UIVersionString';
+
+export interface FlatItem {
+  // Server-relative path, e.g. /sites/x/Shared Documents/A/B/report.docx
+  fileRef: string;
+  name: string;
+  isFolder: boolean;
+  sizeBytes: number;
+  // Retained-version bytes only (total minus current), so it is additive to
+  // sizeBytes exactly the way the rest of the app treats version history.
+  // undefined when the list didn't return SMTotalFileStreamSize.
+  versionSizeBytes?: number;
+  // Approximate retained MAJOR version count, derived from
+  // OData__UIVersionString — see VERSION_LABEL_FIELD above for exactly what
+  // this does and doesn't capture. undefined when the list didn't return the
+  // version label (folders don't have one; num() would otherwise report 0).
+  versionCountApprox?: number;
+  created: string;
+  modified: string;
+  authorId?: number;
+  editorId?: number;
+  // Set instead of authorId/editorId by sources that already have a display
+  // name/login rather than a site-user lookup id — currently only
+  // recycleBin.ts, whose DeletedBy fields come back as plain strings, not
+  // lookup ids. Consumers should prefer these over resolving authorId when
+  // present, rather than trying (and failing) a lookup.
+  authorDisplayName?: string;
+  authorLoginName?: string;
+}
+
+export interface FetchItemsOptions {
+  signal?: AbortSignal;
+  // Fired per page with the running item total, so a long sweep can show
+  // real movement. Pages are 5,000 items, so this fires roughly once per
+  // request rather than continuously.
+  onProgress?: (fetchedSoFar: number) => void;
+  // Opt-in fallback: when the bulk SMTotalFileStreamSize field turns out to
+  // be unselectable on this list (confirmed unsupported, not just an
+  // $orderby quirk — see probeMaxIdAndFields), fetch each file's real
+  // /Versions collection instead of silently reporting no version-history
+  // size at all. Only engaged when this is true, since it costs one extra
+  // request per FILE — roughly doubling this library's request volume — the
+  // opposite of the whole point of the bulk sweep, so it must be something
+  // the user explicitly asked for rather than a free byproduct.
+  includeVersionHistory?: boolean;
+  // Fired once per file whose per-file version fetch failed (throttling
+  // exhausted, transient error) — only relevant when includeVersionHistory
+  // triggered the fallback above. Kept in-scope rather than aborting the
+  // whole library, same as a skipped folder.
+  onVersionSkipped?: () => void;
+}
+
+// Thrown when a library cannot be enumerated at all. The caller reports the
+// library as skipped (with this message) rather than silently under-counting
+// — there is deliberately no recursive-walk fallback any more.
+export class LibraryFetchError extends Error {
+  public constructor(public readonly library: string, message: string) {
+    super(message);
+    this.name = 'LibraryFetchError';
+  }
+}
+
+function num(v: unknown): number {
+  const n = Number(v ?? 0);
+  return isFinite(n) ? n : 0;
+}
+
+function parseVersionCountApprox(versionLabel: unknown): number | undefined {
+  if (versionLabel == null) return undefined;
+  const major = parseInt(String(versionLabel).split('.')[0], 10);
+  if (!isFinite(major)) return undefined;
+  return Math.max(0, major - 1);
+}
+
+function toItem(raw: any): FlatItem {
+  const size = num(raw.File?.Length);
+  // SMTotalFileStreamSize covers current + retained versions. Guard against
+  // it coming back smaller than the current size (it is maintained by the
+  // same lagging background job as StorageMetrics) rather than reporting a
+  // negative version total.
+  const totalWithVersions = raw.SMTotalFileStreamSize != null
+    ? num(raw.SMTotalFileStreamSize)
+    : undefined;
+  return {
+    fileRef: String(raw.FileRef ?? ''),
+    name: String(raw.FileLeafRef ?? ''),
+    isFolder: Number(raw.FSObjType ?? 0) === 1,
+    sizeBytes: size,
+    versionSizeBytes: totalWithVersions != null
+      ? Math.max(0, totalWithVersions - size)
+      : undefined,
+    versionCountApprox: parseVersionCountApprox(raw.OData__UIVersionString),
+    created: raw.Created as string,
+    modified: raw.Modified as string,
+    authorId: raw.AuthorId != null ? Number(raw.AuthorId) : undefined,
+    editorId: raw.EditorId != null ? Number(raw.EditorId) : undefined,
+  };
+}
+
+function itemsUrl(siteUrl: string, listId: string, fields: string): string {
+  return `${siteUrl}/_api/web/lists(guid'${listId}')/items`
+    + `?$select=${fields}&$expand=${SIZE_EXPAND}&$top=${ITEMS_PAGE_SIZE}`;
+}
+
+// ── ID-range sharding ──────────────────────────────────────────────────────
+// Splits ONE library's sweep into several concurrent requests instead of the
+// plain sequential nextLink loop below. Only engaged for libraries large
+// enough to need more than one page — see fetchLibraryItems.
+//
+// Filtering/ordering by Id is the one exception to the "no $filter, no
+// $orderby" rule above: the ID column is always indexed on every SharePoint
+// list, and Microsoft documents indexed-column filters as exempt from the
+// List View Threshold (unlike a filter on an arbitrary column, which forces
+// a full-list scan and throws exactly the exception the plain sweep above
+// is built to avoid). This is a technique this app hasn't used before,
+// though, so it's wrapped in a canary check (below) rather than trusted
+// outright — the same caution that would have caught the File_x0020_Size
+// field turning out to be unselectable on this tenant, had it been applied
+// there too.
+const SHARD_MIN_ITEMS = ITEMS_PAGE_SIZE;
+
+interface FieldProbe {
+  maxId: number;
+  // The winning $select field list (with or without VERSION_FIELD),
+  // INCLUDING the leading "Id" this path needs that the plain sweep doesn't.
+  fields: string;
+}
+
+function probeUrl(siteUrl: string, listId: string, fields: string): string {
+  return `${siteUrl}/_api/web/lists(guid'${listId}')/items`
+    + `?$select=Id,${fields}&$expand=${SIZE_EXPAND}&$orderby=Id desc&$top=1`;
+}
+
+// One small request that answers two questions at once: the library's
+// highest item Id (the upper bound to shard against) and whether
+// SMTotalFileStreamSize is selectable on this list (the same field
+// negotiation fetchLibraryItems does, just piggybacked here instead of
+// costing its own separate request).
+//
+// Deliberately only ONE attempt, with the full field list. This used to
+// retry without SMTotalFileStreamSize on a 400 and shard with the reduced
+// field list — but on a real tenant that 400 turned out to mean "this field
+// can't be combined with $orderby" (confirmed: the exact same field selects
+// fine on fetchLibraryItems's own no-$orderby query), not "this field
+// doesn't exist on this list". Retrying and sharding anyway silently
+// dropped version-history size for the entire library — which, being large
+// enough to need sharding in the first place, is exactly where the bulk of
+// version-history size actually lives. So a 400 here — for any reason —
+// just means sharding shouldn't be attempted at all; fetchLibraryItems
+// falls back to its own plain, non-$orderby sweep, which negotiates the
+// field correctly on its own (keeping it when selectable, dropping it only
+// when the list genuinely doesn't support it, e.g. Site Pages).
+async function probeMaxIdAndFields(
+  client: SpApiClient,
+  siteUrl: string,
+  library: LibraryInfo,
+  signal?: AbortSignal,
+): Promise<FieldProbe | undefined> {
+  if (signal?.aborted) return undefined;
+  const fields = `${BASE_FIELDS},${SIZE_FIELDS},${VERSION_FIELD},${VERSION_LABEL_FIELD}`;
+  try {
+    const data = await client.getJson(probeUrl(siteUrl, library.id!, fields), true);
+    const rows = valueArray(data);
+    if (rows.length === 0) return { maxId: 0, fields }; // empty library
+    const id = Number(rows[0].Id);
+    if (!isFinite(id)) return undefined;
+    return { maxId: id, fields };
+  } catch {
+    return undefined;
+  }
+}
+
+function shardUrl(siteUrl: string, listId: string, fields: string, idGreaterThan: number, idAtMost: number): string {
+  return `${siteUrl}/_api/web/lists(guid'${listId}')/items`
+    + `?$select=${fields}&$expand=${SIZE_EXPAND}`
+    + `&$filter=${encodeURIComponent(`Id gt ${idGreaterThan} and Id le ${idAtMost}`)}`
+    + `&$orderby=Id asc&$top=${ITEMS_PAGE_SIZE}`;
+}
+
+// Fetches one contiguous ID range, paging internally if the shard holds more
+// than one page's worth. Prefers the server's own @odata.nextLink when
+// provided; if a tenant doesn't return one for a filtered/ordered query,
+// falls back to advancing the `Id gt` cursor using the last row's own Id —
+// the same dual-path defensiveness recycleBin.ts's paging already uses,
+// since neither codepath has verified nextLink support on every tenant.
+async function fetchIdRange(
+  client: SpApiClient,
+  siteUrl: string,
+  listId: string,
+  fields: string,
+  rangeStart: number,
+  rangeEnd: number,
+  signal: AbortSignal | undefined,
+  onPage: (count: number) => void,
+): Promise<any[]> {
+  const rows: any[] = [];
+  let cursor = rangeStart;
+  let next: string | undefined = shardUrl(siteUrl, listId, fields, cursor, rangeEnd);
+  for (let page = 0; page < 400 && next && !signal?.aborted; page++) {
+    const data = await client.getJson(next, true);
+    const pageRows = valueArray(data);
+    rows.push(...pageRows);
+    onPage(pageRows.length);
+    const nextLink = data?.['odata.nextLink'] ?? data?.['@odata.nextLink'];
+    if (nextLink) {
+      next = nextLink;
+    } else if (pageRows.length < ITEMS_PAGE_SIZE) {
+      next = undefined; // last page of this shard
+    } else {
+      const lastId = Number(pageRows[pageRows.length - 1]?.Id);
+      if (!isFinite(lastId) || lastId >= rangeEnd) { next = undefined; }
+      else { cursor = lastId; next = shardUrl(siteUrl, listId, fields, cursor, rangeEnd); }
+    }
+  }
+  return rows;
+}
+
+// Bounded-concurrency runner that (unlike SpApiClient.runConcurrent)
+// re-throws the first task failure instead of swallowing it into
+// `undefined`. A silently dropped shard here would under-count the library
+// while looking like a complete, exact sweep — worse than the honest
+// all-or-nothing fallback in fetchLibraryItemsSharded below.
+async function runShardsOrThrow<T>(tasks: (() => Promise<T>)[], concurrency: number): Promise<T[]> {
+  const results: T[] = new Array(tasks.length);
+  let idx = 0;
+  let firstError: any;
+  const worker = async (): Promise<void> => {
+    while (idx < tasks.length && !firstError) {
+      const i = idx++;
+      try {
+        results[i] = await tasks[i]();
+      } catch (err) {
+        firstError = err;
+        return;
+      }
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(concurrency, tasks.length) }, worker));
+  if (firstError) throw firstError;
+  return results;
+}
+
+// Attempts the sharded sweep. Returns undefined (not a thrown error) when
+// sharding should simply not be used for this library — the caller falls
+// back to the plain sequential sweep in that case. Throws only if sharding
+// started succeeding (the canary shard worked, so the ID-filter technique is
+// confirmed to work on this tenant) and then a LATER shard failed — that is
+// a real fetch failure, not a "don't bother sharding" signal, so it should
+// surface as one, same as the plain sweep's own errors do.
+async function fetchLibraryItemsSharded(
+  client: SpApiClient,
+  siteUrl: string,
+  library: LibraryInfo,
+  probe: FieldProbe,
+  options?: FetchItemsOptions,
+): Promise<any[] | undefined> {
+  const listId = library.id!;
+  // Shard COUNT is deliberately NOT tied to scanConcurrency. Sizing shards
+  // that way (maxId / scanConcurrency) was the first version of this and
+  // measured ~2.2x on a real 192,000-item library instead of the ~6x its
+  // concurrency setting should allow — each shard still spanned ~6-7 pages,
+  // so the sweep ran as two lumpy sequential phases (one solo canary shard,
+  // then a batch of N-1 shards each STILL paging internally) rather than a
+  // continuous pipeline. Sizing shards toward ~1 page each and feeding
+  // however many results into the same bounded-concurrency runner keeps the
+  // concurrency budget saturated for the whole sweep instead of just its
+  // first two phases.
+  //
+  // itemCount (from getLibraries) estimates density (items per ID unit) —
+  // a hint for EFFICIENCY only, same as elsewhere in this file: an
+  // under-estimate (heavy historical deletion skewing the ID:item ratio)
+  // just means some shards need a second internal page, never a wrong
+  // total, since correctness comes from the ranges covering [0, maxId]
+  // exhaustively, not from the density guess being right.
+  const density = library.itemCount && library.itemCount > 0 ? library.itemCount / probe.maxId : 1;
+  const spanForOnePage = Math.max(1, Math.ceil(ITEMS_PAGE_SIZE / Math.max(density, 1e-6)));
+  // Upper bound so a badly wrong density estimate can't turn into thousands
+  // of tiny requests — worst case some shards fall back to needing extra
+  // internal pages, which is exactly the graceful-degradation this guards.
+  const MAX_SHARDS = 64;
+  const shardCount = Math.min(MAX_SHARDS, Math.max(1, Math.ceil(probe.maxId / spanForOnePage)));
+  const span = Math.max(1, Math.ceil(probe.maxId / shardCount));
+  const ranges: { start: number; end: number }[] = [];
+  for (let i = 0; i < shardCount; i++) {
+    const start = i * span;
+    if (start >= probe.maxId) break;
+    ranges.push({ start, end: i === shardCount - 1 ? probe.maxId : Math.min(probe.maxId, start + span) });
+  }
+  if (ranges.length === 0) return [];
+
+  let fetchedSoFar = 0;
+  const onPage = (count: number): void => {
+    fetchedSoFar += count;
+    options?.onProgress?.(fetchedSoFar);
+  };
+
+  // Canary: fetch the first shard ALONE before trusting the ID-filter
+  // technique on this tenant at all. Only once it succeeds do the remaining
+  // shards fire concurrently — if it throws, sharding is abandoned for this
+  // library entirely (undefined, not a re-thrown error) so the caller falls
+  // back to the proven sequential sweep, paying only this one shard's cost.
+  let canaryRows: any[];
+  try {
+    canaryRows = await fetchIdRange(
+      client, siteUrl, listId, probe.fields, ranges[0].start, ranges[0].end, options?.signal, onPage,
+    );
+  } catch {
+    return undefined;
+  }
+  if (options?.signal?.aborted || ranges.length === 1) return canaryRows;
+
+  const remaining = ranges.slice(1);
+  const shardResults = await runShardsOrThrow(
+    remaining.map((r) => () => fetchIdRange(
+      client, siteUrl, listId, probe.fields, r.start, r.end, options?.signal, onPage,
+    )),
+    client.scanConcurrency,
+  );
+  return canaryRows.concat(...shardResults);
+}
+
+// Per-file fallback for a list that genuinely doesn't expose
+// SMTotalFileStreamSize (Storage Metrics isn't active for every list/site —
+// confirmed elsewhere by the bulk field 400ing in every query shape tried,
+// not just when combined with $orderby). This is the original, pre-bulk-sweep
+// approach: /Versions excludes the current version, so it's exactly the
+// retained history, and its count is free from the same call that fetches
+// size.
+async function fetchVersionInfo(
+  client: SpApiClient,
+  siteUrl: string,
+  fileServerRelativeUrl: string,
+): Promise<{ sizeBytes: number; count: number }> {
+  const url = `${siteUrl}/_api/web/GetFileByServerRelativePath(decodedUrl='${encodeURIComponent(
+    odata(fileServerRelativeUrl),
+  )}')/Versions?$select=Size`;
+  const versions = await client.getJsonPaged(url);
+  return {
+    sizeBytes: versions.reduce((sum, v) => sum + Number(v.Size ?? 0), 0),
+    count: versions.length,
+  };
+}
+
+// Fills in versionSizeBytes/versionCountApprox on every FILE row via the
+// per-file fallback above, mutating `items` in place. Runs at half
+// scanConcurrency (like the pre-rewrite versionQueue did) so opting into
+// this doesn't multiply the bulk sweep's own request volume on top of
+// itself — it already costs one extra request per file, which is enough.
+async function fillMissingVersionSizes(
+  client: SpApiClient,
+  siteUrl: string,
+  items: FlatItem[],
+  signal: AbortSignal | undefined,
+  onSkipped: (() => void) | undefined,
+): Promise<void> {
+  const files = items.filter((i) => !i.isFolder);
+  if (files.length === 0) return;
+  const concurrency = Math.max(1, Math.floor(client.scanConcurrency / 2));
+  await client.runConcurrent(
+    files.map((file) => async () => {
+      if (signal?.aborted) return undefined;
+      try {
+        const info = await fetchVersionInfo(client, siteUrl, file.fileRef);
+        file.versionSizeBytes = info.sizeBytes;
+        file.versionCountApprox = info.count;
+      } catch {
+        onSkipped?.();
+      }
+      return undefined;
+    }),
+    concurrency,
+  );
+}
+
+// One flat sweep of a library. Resolves with every item (files AND folders);
+// throws LibraryFetchError if the library can't be enumerated.
+//
+// skipBatch is set on every page: $batch exists to amortize many small
+// requests, and a 5,000-item page is the opposite shape — see getJson.
+export async function fetchLibraryItems(
+  client: SpApiClient,
+  siteUrl: string,
+  library: LibraryInfo,
+  options?: FetchItemsOptions,
+): Promise<FlatItem[]> {
+  if (!library.id) {
+    throw new LibraryFetchError(
+      library.title,
+      'Library has no list id — cannot run a bulk item query against it.',
+    );
+  }
+
+  // Only worth the extra probe request for a library actually large enough
+  // to span multiple pages. itemCount is a hint here, not load-bearing — it
+  // can be stale, and being wrong only costs one skipped/attempted probe
+  // either direction, never a correctness problem.
+  if ((library.itemCount ?? 0) > SHARD_MIN_ITEMS && !options?.signal?.aborted) {
+    const probe = await probeMaxIdAndFields(client, siteUrl, library, options?.signal);
+    if (probe && probe.maxId > 0) {
+      try {
+        const rows = await fetchLibraryItemsSharded(client, siteUrl, library, probe, options);
+        if (rows) return rows.map(toItem);
+        // undefined: the canary shard failed — the ID-filter technique isn't
+        // safe to use on this tenant. Fall through to the plain sequential
+        // sweep below rather than sharding.
+      } catch (err: any) {
+        // A LATER shard failed after the canary already succeeded — this is
+        // a genuine fetch failure, not a "don't shard" signal, so it's
+        // reported the same way the sequential sweep's own failures are.
+        throw new LibraryFetchError(library.title, err?.message ?? String(err));
+      }
+    }
+  }
+
+  // Field negotiation, not a fallback to the old walk: a $select naming an
+  // absent field 400s the entire query, and version-history metadata varies
+  // by list template (Picture Libraries and Site Pages are not identical to
+  // a plain Document Library). Try with SMTotalFileStreamSize first, then
+  // the same query without it, and only then give up on the library.
+  const attempts = [
+    `${BASE_FIELDS},${SIZE_FIELDS},${VERSION_FIELD},${VERSION_LABEL_FIELD}`,
+    `${BASE_FIELDS},${SIZE_FIELDS},${VERSION_LABEL_FIELD}`,
+  ];
+
+  let lastError: any;
+  for (let i = 0; i < attempts.length; i++) {
+    if (options?.signal?.aborted) return [];
+    try {
+      const raw = await client.getJsonPaged(
+        itemsUrl(siteUrl, library.id, attempts[i]),
+        options?.signal,
+        // A library needing more than this many pages holds >2,000,000 items,
+        // which is far past what SharePoint supports in a single list.
+        400,
+        true, // skipBatch
+        options?.onProgress,
+      );
+      const items = raw.map(toItem);
+      if (i > 0) {
+        if (options?.includeVersionHistory) {
+          // The bulk field isn't selectable on this list at all — fetch
+          // each file's real version history instead of silently reporting
+          // none. This is the expensive path (one request per file), only
+          // reached because the user explicitly opted in.
+          await fillMissingVersionSizes(client, siteUrl, items, options?.signal, options?.onVersionSkipped);
+        } else {
+          // eslint-disable-next-line no-console
+          console.warn(
+            `[SmartStorageAnalyzer] ${library.title}: version-history size unavailable on this list ` +
+            '— sizes exclude retained versions for this library.',
+          );
+        }
+      }
+      return items;
+    } catch (err: any) {
+      lastError = err;
+      // Only a field-shape problem is worth retrying with fewer fields. A
+      // throttle/permission/threshold failure will fail identically the
+      // second time, so surface it immediately instead of doubling the cost.
+      const status = /HTTP (\d+)/.exec(err?.message ?? '')?.[1];
+      if (status !== '400') break;
+    }
+  }
+
+  throw new LibraryFetchError(
+    library.title,
+    lastError?.message ?? String(lastError ?? 'Unknown error'),
+  );
+}
+
+// Author/Editor come back as numeric lookup ids. Resolving them means one
+// request per SITE (the user information list is small and shared by every
+// library) instead of the $expand=Author that used to ride along on every
+// single file row — by far the most expensive part of the old per-file
+// query.
+export async function fetchSiteUsers(
+  client: SpApiClient,
+  siteUrl: string,
+  signal?: AbortSignal,
+): Promise<Map<number, { title: string; loginName: string }>> {
+  const map = new Map<number, { title: string; loginName: string }>();
+  try {
+    const data = await client.getJson(
+      `${siteUrl}/_api/web/siteusers?$select=Id,Title,LoginName&$top=${ITEMS_PAGE_SIZE}`,
+    );
+    if (signal?.aborted) return map;
+    for (const u of valueArray(data)) {
+      const id = Number(u.Id);
+      if (!isFinite(id)) continue;
+      map.set(id, { title: String(u.Title ?? ''), loginName: String(u.LoginName ?? '') });
+    }
+  } catch {
+    // Names are presentational — a report with blank authors is far better
+    // than no report, so this never fails a scan.
+  }
+  return map;
+}

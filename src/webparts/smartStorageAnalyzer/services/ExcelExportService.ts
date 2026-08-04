@@ -167,7 +167,7 @@ export class ExcelExportService {
     // otherwise every entry's versionSizeBytes is undefined and the column
     // would just be blank, misleadingly implying "confirmed zero".
     const headers = ['Library', 'Path', 'Name', 'Size', 'Size (bytes)'];
-    if (includeVersionHistory) headers.push('Version History Size', 'Version History Size (bytes)', 'Version Count');
+    if (includeVersionHistory) headers.push('Version History Size', 'Version History Size (bytes)', 'Version Count (est.)');
     headers.push('Created', 'Modified', 'Age (days)', 'Author', 'Tier');
     const headerRow = ws.getRow(1);
     headers.forEach((h, i) => {
@@ -242,7 +242,7 @@ export class ExcelExportService {
 
   exportCsv(entries: FileEntry[], includeVersionHistory = false, siteUrl = ''): void {
     const header = ['Library', 'Path', 'Name', 'Size (bytes)'];
-    if (includeVersionHistory) header.push('Version History Size (bytes)', 'Version Count');
+    if (includeVersionHistory) header.push('Version History Size (bytes)', 'Version Count (est.)');
     header.push('Created', 'Modified', 'Age (days)', 'Author', 'Tier');
     const rows: string[][] = [header];
     for (const e of entries) {
@@ -271,7 +271,7 @@ export class ExcelExportService {
     // rollup exists — see FolderListRow.versionSizeBytes) and render blank,
     // same as the in-app List view's '—'.
     const headers = ['Type', 'Name', 'Size', 'Size (bytes)'];
-    if (includeVersionHistory) headers.push('Version History Size', 'Version History Size (bytes)', 'Version Count');
+    if (includeVersionHistory) headers.push('Version History Size', 'Version History Size (bytes)', 'Version Count (est.)');
     headers.push('Items', 'Modified', 'Age (days)', 'Author', 'Status');
     const headerRow = ws.getRow(3);
     headers.forEach((h, i) => {
@@ -327,7 +327,7 @@ export class ExcelExportService {
 
   exportFolderListingCsv(rows: FolderListRow[], contextLabel: string, includeVersionHistory = false): void {
     const header = ['Type', 'Name', 'Size (bytes)'];
-    if (includeVersionHistory) header.push('Version History Size (bytes)', 'Version Count');
+    if (includeVersionHistory) header.push('Version History Size (bytes)', 'Version Count (est.)');
     header.push('Items', 'Modified', 'Age (days)', 'Author', 'Status');
     const out: string[][] = [header];
     for (const r of rows) {

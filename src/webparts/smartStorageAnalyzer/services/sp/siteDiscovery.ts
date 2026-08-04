@@ -1,5 +1,6 @@
 import { SpApiClient, isSystemLibrary, LIBRARY_TEMPLATES, valueArray } from './spCore';
 import { LibraryInfo } from '../../models/models';
+import { makeRecycleBinLibrary } from './recycleBin';
 
 // GETs _api/web?$select=EffectiveBasePermissions and checks whether the
 // current user has ManageWeb (0x40000000) or ManagePermissions (0x02000000)
@@ -31,21 +32,28 @@ export async function getLibraries(
   // real storage.
   const templateFilter = LIBRARY_TEMPLATES.map((t) => `BaseTemplate eq ${t}`).join(' or ');
   const data = await client.getJson(
-    `${siteUrl}/_api/web/lists?$select=Title,BaseTemplate,ItemCount,NoCrawl,RootFolder/ServerRelativeUrl,RootFolder/TimeLastModified,IsSiteAssetsLibrary,Hidden` +
+    `${siteUrl}/_api/web/lists?$select=Id,Title,BaseTemplate,ItemCount,NoCrawl,RootFolder/ServerRelativeUrl,RootFolder/TimeLastModified,IsSiteAssetsLibrary,Hidden` +
       `&$expand=RootFolder&$filter=(${templateFilter})`,
   );
   const lists = valueArray(data);
-  return lists
+  const libraries: LibraryInfo[] = lists
     .filter((lib: any) => !lib.Hidden)
     .filter((lib: any) => includeHidden || !isSystemLibrary(lib))
     .map((lib: any) => ({
       title: lib.Title as string,
+      id: lib.Id as string | undefined,
       serverRelativeUrl: lib.RootFolder?.ServerRelativeUrl as string,
       itemCount: lib.ItemCount as number,
       noCrawl: !!lib.NoCrawl,
       baseTemplate: lib.BaseTemplate as number,
       lastModified: lib.RootFolder?.TimeLastModified as string | undefined,
     }));
+  // Appended last, always: the Recycle Bin isn't a real list this $filter
+  // could ever match, but every caller of getLibraries (the root treemap,
+  // the library switcher, Storage Report's per-site scan loop) should see it
+  // exactly like any other library rather than needing its own special case.
+  libraries.push(makeRecycleBinLibrary(siteUrl));
+  return libraries;
 }
 
 export interface SubwebInfo {

@@ -1,6 +1,7 @@
 import { SpApiClient } from './spCore';
 import { getLibraries, getSubwebsRecursive } from './siteDiscovery';
 import { walkLibrary } from './fileWalk';
+import { fetchSiteUsers } from './listItems';
 import { CandidateTier, FileEntry, ScanOptions, ScanProgress, StorageReportSummary } from '../../models/models';
 
 export interface ScanResult {
@@ -63,24 +64,74 @@ export async function scanSite(
     }
   }
 
+  // Sum of every library's own ItemCount (files + folders), known once
+  // discovery above finishes — the basis for the progress bar's ETA. A
+  // hint, not a guarantee (ItemCount can be stale, and the Recycle Bin
+  // pseudo-library has none), so it's a rough total rather than exact; good
+  // enough for "about how long is left", which is all an ETA needs to be.
+  const totalItemsHint = librariesPerSite.reduce(
+    (sum, { libraries }) => sum + libraries.reduce((s, l) => s + (l.itemCount ?? 0), 0),
+    0,
+  );
+  // Raw items (files + folders) read so far across every COMPLETED library.
+  // The current library's own in-progress count is added on top of this when
+  // reporting progress — see itemsFetched below.
+  let itemsDoneAcrossLibraries = 0;
+
   for (const { siteUrl, libraries } of librariesPerSite) {
     if (options.signal?.aborted) break;
+    // Author/Editor names for every library on this site, resolved once. The
+    // bulk item sweep returns numeric lookup ids rather than expanded user
+    // objects, because $expand=Author on a per-file query was one of the
+    // biggest per-row costs in the old walk.
+    const users = await fetchSiteUsers(client, siteUrl, options.signal);
     for (const library of libraries) {
       if (options.signal?.aborted) break;
-      onProgress({ message: `Scanning ${library.title}…`, scanned: entries.length, libsDone, libsTotal });
-      const { skippedFolders: libSkipped, skippedVersions: libSkippedVersions, skippedFolderDetails: libDetails } = await walkLibrary(
-        client, siteUrl, library, options, (entry) => {
+      onProgress({
+        message: `Scanning ${library.title}…`, scanned: entries.length, libsDone, libsTotal,
+        itemsFetched: itemsDoneAcrossLibraries, totalItemsHint,
+      });
+      let lastFetchedInLibrary = 0;
+      const { failed, skippedVersions: libSkippedVersions } = await walkLibrary(
+        client, siteUrl, library, options, users,
+        (entry) => {
           entries.push(entry);
           onEntry?.(entry);
         },
+        // Fires per 5,000-item page, so a large library reports real
+        // movement instead of sitting on one number until it finishes. This
+        // is now the ONLY phase of a library's scan — version history (size
+        // and an approximate count) arrives in this same bulk read at no
+        // extra request cost, so there is no separate slow pass after it any
+        // more (see fileWalk.ts).
+        (fetchedSoFar) => {
+          lastFetchedInLibrary = fetchedSoFar;
+          onProgress({
+            message: `Scanning ${library.title}… (${fetchedSoFar.toLocaleString()} items read)`,
+            scanned: entries.length,
+            libsDone,
+            libsTotal,
+            itemsFetched: itemsDoneAcrossLibraries + fetchedSoFar,
+            totalItemsHint,
+          });
+        },
       );
-      skippedFolders += libSkipped;
-      skippedVersions += libSkippedVersions;
-      if (skippedFolderDetails.length < MAX_SKIPPED_DETAILS) {
-        skippedFolderDetails.push(...libDetails.slice(0, MAX_SKIPPED_DETAILS - skippedFolderDetails.length));
+      // A library that could not be enumerated at all. Counted with the same
+      // skipped/details reporting the UI already surfaces, so a partial scan
+      // still says exactly what is missing.
+      if (failed) {
+        skippedFolders++;
+        if (skippedFolderDetails.length < MAX_SKIPPED_DETAILS) {
+          skippedFolderDetails.push(failed);
+        }
       }
+      skippedVersions += libSkippedVersions;
+      itemsDoneAcrossLibraries += lastFetchedInLibrary;
       libsDone++;
-      onProgress({ message: `Scanning ${library.title}…`, scanned: entries.length, libsDone, libsTotal });
+      onProgress({
+        message: `Scanning ${library.title}…`, scanned: entries.length, libsDone, libsTotal,
+        itemsFetched: itemsDoneAcrossLibraries, totalItemsHint,
+      });
     }
   }
 
@@ -114,8 +165,8 @@ export async function scanSite(
   summary.durationSeconds = (Date.now() - start) / 1000;
   summary.skippedFolders = skippedFolders;
   summary.skippedSites = skippedSites;
-  summary.skippedVersions = skippedVersions;
   summary.skippedFolderDetails = skippedFolderDetails;
+  summary.skippedVersions = skippedVersions;
   summary.versionHistoryIncluded = options.includeVersionHistory;
 
   return { entries, summary, canceled: !!options.signal?.aborted };

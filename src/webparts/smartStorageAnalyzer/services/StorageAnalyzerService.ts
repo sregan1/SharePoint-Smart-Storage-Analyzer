@@ -6,9 +6,10 @@ import { SpApiClient } from './sp/spCore';
 import * as siteDiscovery from './sp/siteDiscovery';
 import * as storageMetrics from './sp/storageMetrics';
 import * as libraryStats from './sp/libraryStats';
-import * as folderSizeCache from './sp/folderSizeCache';
 import * as storageScan from './sp/storageScan';
 import { ScanResult } from './sp/storageScan';
+
+export type { WalkOptions, WalkProgress } from './sp/storageMetrics';
 
 // Facade over the sp/ modules so views keep a single dependency with a
 // stable API. Implementation lives in:
@@ -55,47 +56,68 @@ export class StorageAnalyzerService {
    * itself: that function only skips size computation when a library *named*
    * "Documents"/"Shared Documents" exists, and otherwise falls back to a full
    * recursive walk per library to pick a default by size. For the Explorer,
-   * which now sizes libraries via getLibraryRollups (probe-only, by design),
-   * that hidden path would be a whole-site walk before the cheap path even ran.
+   * which sizes libraries via getLibraryRollups instead, that hidden path
+   * would be a whole-site walk before the cheap path even ran.
    */
   getLibraries(siteUrl: string, includeHidden: boolean): Promise<LibraryInfo[]> {
     return siteDiscovery.getLibraries(this.client, siteUrl, includeHidden);
   }
 
   /**
-   * Per-library sizes for the Explorer's site-root treemap. StorageMetrics
-   * probe per library and nothing more — see getLibraryRollups for why this
-   * must never fall back to a recursive walk.
+   * Per-library sizes for the Explorer's site-root treemap. Tries a
+   * StorageMetrics probe per library first; falls back to a live recursive
+   * walk when that's stale/unavailable (see getLibraryRollups). The walk has
+   * no automatic time/count limit — pass `options.signal` to cancel it, and
+   * `options.onWalkProgress` for a live folder-visited counter while it runs.
    */
-  getLibraryRollups(siteUrl: string, libraries: LibraryInfo[]): Promise<libraryStats.LibraryRollup[]> {
-    return libraryStats.getLibraryRollups(this.client, siteUrl, libraries);
+  getLibraryRollups(
+    siteUrl: string,
+    libraries: LibraryInfo[],
+    options?: storageMetrics.WalkOptions,
+  ): Promise<libraryStats.LibraryRollup[]> {
+    return libraryStats.getLibraryRollups(this.client, siteUrl, libraries, options);
   }
 
-  // ── Folder Explorer (StorageMetrics-driven, lazy per level) ──────────────
+  // ── Tree View / List View (one flat sweep per library, then in memory) ───
 
+  /**
+   * Immediate child folders with exact recursive sizes. The first call for a
+   * library sweeps it (~1 request per 5,000 items); every drill-down after
+   * that is served from the in-memory aggregate with no network at all.
+   */
   getFolderChildren(
     siteUrl: string,
+    library: LibraryInfo,
     parentServerRelativeUrl: string,
     onProgress?: storageMetrics.FolderChildProgress,
+    options?: storageMetrics.WalkOptions,
   ): Promise<FolderStorageNode[]> {
-    return storageMetrics.getFolderChildren(this.client, siteUrl, parentServerRelativeUrl, onProgress);
+    return storageMetrics.getFolderChildren(
+      this.client, siteUrl, library, parentServerRelativeUrl, onProgress, options,
+    );
   }
 
   /**
-   * Discards cached folder sizes so the next load re-measures from SharePoint.
-   * Backs the Explorer's Refresh action — without it, a folder that came back
-   * unmeasurable or truncated stays that way for the cache's full TTL.
+   * Discards the cached per-library aggregates so the next load re-sweeps
+   * from SharePoint. Backs the Explorer's Refresh action.
    */
   clearFolderSizeCache(siteUrl?: string): void {
-    folderSizeCache.clearCachedFolderChildren(siteUrl);
+    storageMetrics.clearAggregateCache(siteUrl);
   }
 
+  /**
+   * Version history (size and an approximate count) is always included at
+   * no extra cost — see storageMetrics.getFolderFiles — so there is no
+   * separate flag to request it here any more; the Explorer's "Include
+   * version history" toggle now only controls whether it's DISPLAYED.
+   */
   getFolderFiles(
     siteUrl: string,
+    library: LibraryInfo,
     serverRelativeUrl: string,
-    includeVersionHistory?: boolean,
+    options?: storageMetrics.WalkOptions,
   ): ReturnType<typeof storageMetrics.getFolderFiles> {
-    return storageMetrics.getFolderFiles(this.client, siteUrl, serverRelativeUrl, includeVersionHistory);
+    return storageMetrics.getFolderFiles(this.client, siteUrl, library, serverRelativeUrl, options);
   }
 
   // ── Storage Report (full recursive scan) ──────────────────────────────────

@@ -275,8 +275,17 @@ export class SpApiClient {
   public batchingEnabled = true;
   private batchFallbackWarned = false;
 
-  public async getJson(url: string): Promise<any> {
-    if (!this.batchingEnabled) return this.getJsonDirect(url);
+  /**
+   * `skipBatch` opts a single call out of coalescing. Batching exists to
+   * amortize MANY SMALL requests; a bulk read that returns thousands of list
+   * items is the opposite shape — bundling it buys nothing (there is nothing
+   * to amortize against) and actively hurts: the whole multipart response
+   * must be buffered and string-split before any member resolves, and one
+   * oversized member delays every unrelated request that landed in the same
+   * 15ms window. Bulk paged reads (see listItems.ts) pass true.
+   */
+  public async getJson(url: string, skipBatch = false): Promise<any> {
+    if (!this.batchingEnabled || skipBatch) return this.getJsonDirect(url);
     return new Promise<any>((resolve, reject) => {
       this.batchQueue.push({ url, resolve, reject });
       if (this.batchQueue.length >= SpApiClient.BATCH_MAX) this.flushBatches();
@@ -505,6 +514,35 @@ export class SpApiClient {
       // the URL itself is usually the only clue pointing at the culprit.
       throw new Error(`HTTP ${resp.status} on ${url} — ${txt.substring(0, 300)}`);
     }
+
+    // A 200 with an HTML body — an interstitial/error page, not the JSON
+    // that was asked for — is a real, observed shape distinct from the
+    // documented 429/503/406 throttle responses: under heavy sustained load
+    // (many concurrent shard requests — see listItems.ts) SharePoint can
+    // return one of these instead, with no throttle-signaling status code
+    // to catch above. Calling resp.json() on it crashes with "Unexpected
+    // token '<'" rather than surfacing anything actionable. Content-Type is
+    // the reliable signal here (unlike sniffing the body), and treating it
+    // exactly like a recognized throttle — trip the shared gate, retry with
+    // the same escalating backoff — is the correct response either way:
+    // whether this really is throttling in disguise or some other transient
+    // interstitial, backing off and retrying is what recovers it.
+    const contentType = resp.headers.get('Content-Type') ?? '';
+    if (!contentType.includes('json')) {
+      const fallback = SpApiClient.RETRY_BACKOFF_SECONDS[
+        Math.min(attempt, SpApiClient.RETRY_BACKOFF_SECONDS.length - 1)
+      ];
+      this.noteThrottled(fallback);
+      if (attempt < SpApiClient.RETRY_BACKOFF_SECONDS.length) {
+        return this.getJsonDirect(url, attempt + 1);
+      }
+      throw new Error(
+        `HTTP ${resp.status} on ${url} — SharePoint returned a non-JSON response ` +
+        `(likely throttling) and retries were exhausted. Lower Concurrent API requests ` +
+        'in Settings and try again shortly.',
+      );
+    }
+
     this.noteSuccess();
     return resp.json();
   }
@@ -516,13 +554,20 @@ export class SpApiClient {
   // default of 400 covers 2,000,000 items before it ever kicks in, so a real
   // truncation here means a genuinely enormous single folder, not routine
   // library size.
-  public async getJsonPagedMeta(url: string, signal?: AbortSignal, maxPages = 400): Promise<{ items: any[]; truncated: boolean }> {
+  public async getJsonPagedMeta(
+    url: string,
+    signal?: AbortSignal,
+    maxPages = 400,
+    skipBatch = false,
+    onPage?: (fetchedSoFar: number) => void,
+  ): Promise<{ items: any[]; truncated: boolean }> {
     const all: any[] = [];
     let next: string | undefined = url;
     let page = 0;
     for (; next && page < maxPages && !signal?.aborted; page++) {
-      const data = await this.getJson(next);
+      const data = await this.getJson(next, skipBatch);
       all.push(...valueArray(data));
+      onPage?.(all.length);
       next = data?.['odata.nextLink'] ?? data?.['@odata.nextLink'] ?? data?.d?.__next;
     }
     const truncated = !!next && page >= maxPages;
@@ -537,8 +582,14 @@ export class SpApiClient {
   // truncation themselves (small/bounded collections like a file's version
   // history) — see getJsonPagedMeta for callers that must propagate it
   // (e.g. as sizeApproximate) instead of silently under-counting.
-  public async getJsonPaged(url: string, signal?: AbortSignal, maxPages = 400): Promise<any[]> {
-    return (await this.getJsonPagedMeta(url, signal, maxPages)).items;
+  public async getJsonPaged(
+    url: string,
+    signal?: AbortSignal,
+    maxPages = 400,
+    skipBatch = false,
+    onPage?: (fetchedSoFar: number) => void,
+  ): Promise<any[]> {
+    return (await this.getJsonPagedMeta(url, signal, maxPages, skipBatch, onPage)).items;
   }
 
   public async runConcurrent<T>(

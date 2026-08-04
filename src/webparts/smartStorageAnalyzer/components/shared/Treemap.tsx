@@ -34,7 +34,7 @@ function cellTooltip(item: TreemapRect): string {
     }
     const fileCount = item.itemCount != null ? `, ${item.itemCount} file${item.itemCount === 1 ? '' : 's'}` : '';
     const size = item.sizeApproximate
-      ? `at least ${formatBytes(item.sizeBytes)} (measurement stopped at this view's request budget — open the folder to go deeper, or raise Concurrent API requests in Settings to measure deeper before stopping)`
+      ? `at least ${formatBytes(item.sizeBytes)} (measurement was stopped before this folder's subtree was fully counted — open it to measure directly, or use Refresh to measure again)`
       : formatBytes(item.sizeBytes);
     return `${item.label} (folder) — ${size}${fileCount}${item.lastModified ? `, most recent activity ${new Date(item.lastModified).toLocaleDateString()}` : ''}`;
   }
