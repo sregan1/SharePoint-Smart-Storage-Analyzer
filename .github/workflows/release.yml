@@ -1,9 +1,9 @@
-name: Release
+name: Build and Release
 
 on:
   push:
-    tags:
-      - 'v*.*.*'
+    branches: [main]
+  workflow_dispatch:
 
 permissions:
   contents: write
@@ -11,35 +11,85 @@ permissions:
 jobs:
   build-and-release:
     runs-on: ubuntu-latest
-    steps:
-      - name: Check out repository
-        uses: actions/checkout@v4
 
-      - name: Set up Node.js
-        uses: actions/setup-node@v4
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
         with:
           node-version: '18.17.1'
+          cache: 'npm'
+
+      - name: Install gulp-cli
+        run: npm install -g gulp-cli
 
       - name: Install dependencies
         run: npm ci
 
-      - name: Build release package
-        run: |
-          npx gulp clean
-          npm run ship
+      - name: Build and package
+        run: npm run ship
 
-      - name: Locate .sppkg
-        id: sppkg
+      - name: Read solution version
+        id: version
         run: |
-          PKG=$(find sharepoint/solution -maxdepth 1 -name '*.sppkg' | head -n1)
-          if [ -z "$PKG" ]; then
-            echo "No .sppkg found under sharepoint/solution" >&2
-            exit 1
-          fi
-          echo "path=$PKG" >> "$GITHUB_OUTPUT"
+          VERSION=$(node -p "require('./config/package-solution.json').solution.version")
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
 
-      - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2
+      - name: Publish rolling "latest" build
+        uses: ncipollo/release-action@v1
         with:
-          files: ${{ steps.sppkg.outputs.path }}
-          generate_release_notes: true
+          tag: latest
+          name: "Latest Build (v${{ steps.version.outputs.version }})"
+          body: |
+            Automated build from commit ${{ github.sha }}.
+            Upload `smart-storage-analyzer.sppkg` to your SharePoint App Catalog to deploy.
+          artifacts: "sharepoint/solution/smart-storage-analyzer.sppkg"
+          artifactContentType: application/zip
+          allowUpdates: true
+          removeArtifacts: true
+          makeLatest: false
+          prerelease: false
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Check whether a versioned release already exists
+        id: check_version_tag
+        run: |
+          # config/package-solution.json uses a 4-part version (X.Y.Z.0); release tags are 3-part (vX.Y.Z)
+          SEMVER=$(echo "${{ steps.version.outputs.version }}" | cut -d. -f1-3)
+          echo "semver=$SEMVER" >> $GITHUB_OUTPUT
+          if git ls-remote --tags origin "refs/tags/v$SEMVER" | grep -q .; then
+            echo "exists=true" >> $GITHUB_OUTPUT
+          else
+            echo "exists=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Extract changelog section for this version
+        if: steps.check_version_tag.outputs.exists == 'false'
+        run: |
+          SEMVER="${{ steps.check_version_tag.outputs.semver }}"
+          awk -v ver="$SEMVER" '
+            /^## \[/ {
+              if (found) exit
+              if (index($0, "[" ver "]") > 0) { found=1 }
+              next
+            }
+            found && $0 !~ /^---[[:space:]]*$/ { print }
+          ' CHANGELOG.md > release_notes.md
+          if [ ! -s release_notes.md ]; then
+            echo "Release v$SEMVER. See CHANGELOG.md for details." > release_notes.md
+          fi
+
+      - name: Publish versioned release
+        if: steps.check_version_tag.outputs.exists == 'false'
+        uses: ncipollo/release-action@v1
+        with:
+          tag: "v${{ steps.check_version_tag.outputs.semver }}"
+          name: "v${{ steps.check_version_tag.outputs.semver }}"
+          bodyFile: "release_notes.md"
+          commit: ${{ github.sha }}
+          artifacts: "sharepoint/solution/smart-storage-analyzer.sppkg"
+          artifactContentType: application/zip
+          allowUpdates: false
+          makeLatest: true
+          prerelease: false
+          token: ${{ secrets.GITHUB_TOKEN }}
