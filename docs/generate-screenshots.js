@@ -101,8 +101,16 @@ function tierLegend(showFolder) {
 }
 
 // ── 0. Home — landing screen with Tree View / List View / Storage Report cards ──
-function homePage() {
-  const card = (iconSvg, title, desc, buttonLabel) => `
+// Each card's preview tile shows an actual (downscaled) screenshot of that tool
+// rather than a blank placeholder — real screenshots, not icons standing in for
+// them, since a first-time visitor deciding which card to click is exactly who
+// benefits from seeing the real UI. `imgDataUris` is a {treemap, list, report}
+// map of base64 data URIs, built from THIS run's own freshly-rendered PNGs (see
+// main() — those three shots are generated before this one specifically so
+// there is always something current to embed, never a stale file left over
+// from a previous run).
+function homePage(imgDataUris) {
+  const card = (iconSvg, title, desc, buttonLabel, previewSrc) => `
     <div style="background:#fff;border:1px solid ${NEUTRAL.border};border-radius:6px;overflow:hidden;display:flex;flex-direction:column;box-shadow:0 1px 4px rgba(0,0,0,0.06);">
       <div style="padding:16px;display:flex;flex-direction:column;gap:8px;flex-grow:1;">
         <div style="display:flex;align-items:center;gap:8px;">
@@ -111,7 +119,9 @@ function homePage() {
         </div>
         <div style="font-size:12.5px;color:${NEUTRAL.text2};line-height:1.5;flex-grow:1;">${desc}</div>
       </div>
-      <div style="height:180px;background:${NEUTRAL.tileBg};border-top:1px solid ${NEUTRAL.border};"></div>
+      <div style="height:180px;background:${NEUTRAL.tileBg};border-top:1px solid ${NEUTRAL.border};overflow:hidden;">
+        <img src="${previewSrc}" style="width:100%;height:100%;object-fit:cover;object-position:top;display:block;" />
+      </div>
       <div style="padding:16px;">
         <button class="btn primary" style="width:100%;justify-content:center;">${buttonLabel}</button>
       </div>
@@ -123,9 +133,9 @@ function homePage() {
         Understand where your SharePoint storage is going — no PowerShell required.
       </div>
       <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:20px;">
-        ${card(TREEMAP_SVG, 'Tree View', 'See every library and folder as a proportional treemap, sized by storage used, and drill straight into the biggest ones.', 'Open Tree View')}
-        ${card(LIST_SVG, 'List View', 'Browse folders and files in a sortable table — size, file count, last modified — for a more precise, spreadsheet-like look.', 'Open List View')}
-        ${card(BARCHART_SVG, 'Storage Report', 'Run a full scan of the site (optionally including subsites) and export a detailed Excel report of stale and very stale files.', 'Run Storage Report')}
+        ${card(TREEMAP_SVG, 'Tree View', 'See every library and folder as a proportional treemap, sized by storage used, and drill straight into the biggest ones.', 'Open Tree View', imgDataUris.treemap)}
+        ${card(LIST_SVG, 'List View', 'Browse folders and files in a sortable table — size, file count, last modified — for a more precise, spreadsheet-like look.', 'Open List View', imgDataUris.list)}
+        ${card(BARCHART_SVG, 'Storage Report', 'Run a full scan of the site (optionally including subsites) and export a detailed Excel report of stale and very stale files.', 'Run Storage Report', imgDataUris.report)}
       </div>
     </div>`;
   return pageShell(body, { maxWidth: '1160px' });
@@ -137,10 +147,13 @@ function explorerTreemapPage() {
     { l: 0, t: 0, w: 52, h: 62, color: FOLDER_COLOR, name: 'Documents', sub: '18.6 GB · 8,412 files' },
     { l: 52, t: 0, w: 30, h: 62, color: FOLDER_COLOR, name: 'Campaign Archive', sub: '6.1 GB · 2,340 files' },
     { l: 82, t: 0, w: 18, h: 62, color: FOLDER_COLOR, name: 'Site Assets', sub: '2.2 GB · 640 files' },
-    { l: 0, t: 62, w: 24, h: 38, color: FOLDER_COLOR, name: 'Old Reports', sub: '1.1 GB · 210 files' },
-    { l: 24, t: 62, w: 16, h: 38, color: FOLDER_COLOR, name: 'Templates', sub: '340 MB · 156 files' },
-    { l: 40, t: 62, w: 20, h: 38, color: '#c77f00', name: 'Legal Hold', sub: 'Unknown', pattern: true },
-    { l: 60, t: 62, w: 18, h: 38, color: OTHER_COLOR, name: 'Other (3 libraries)', sub: '620 MB combined' },
+    // Bottom row widths MUST sum to 100 — they previously summed to 78,
+    // leaving an uncovered 22%-wide strip of background on the right that
+    // made the treemap read as a ragged shape instead of a filled rectangle.
+    { l: 0, t: 62, w: 30, h: 38, color: FOLDER_COLOR, name: 'Old Reports', sub: '1.1 GB · 210 files' },
+    { l: 30, t: 62, w: 18, h: 38, color: FOLDER_COLOR, name: 'Templates', sub: '340 MB · 156 files' },
+    { l: 48, t: 62, w: 27, h: 38, color: '#c77f00', name: 'Legal Hold', sub: 'Unknown', pattern: true },
+    { l: 75, t: 62, w: 25, h: 38, color: OTHER_COLOR, name: 'Other (3 libraries)', sub: '620 MB combined' },
   ];
   const cellsHtml = cells.map((c) => `
     <div style="position:absolute;left:${c.l}%;top:${c.t}%;width:${c.w}%;height:${c.h}%;background:${c.pattern ? 'repeating-linear-gradient(45deg,#a36200,#a36200 6px,#c77f00 6px,#c77f00 12px)' : c.color};border:1px solid ${NEUTRAL.bg};box-sizing:border-box;padding:5px 7px;overflow:hidden;">
@@ -461,13 +474,30 @@ async function main() {
     args: ['--no-sandbox', '--disable-setuid-sandbox', '--font-render-hinting=none'],
   });
 
+  // Home's card previews embed real screenshots of the other three tools, so
+  // those three MUST be generated (and written to disk) before homePage()
+  // runs — hence they're ordered ahead of it here, even though the final
+  // filenames sort with 00_home.png first. loadHomeImages() reads them back
+  // as base64 data URIs once they exist.
+  function loadHomeImages() {
+    const toDataUri = (filename) => {
+      const bytes = fs.readFileSync(path.join(OUT, filename));
+      return `data:image/png;base64,${bytes.toString('base64')}`;
+    };
+    return {
+      treemap: toDataUri('01_explorer_treemap.png'),
+      list: toDataUri('02_explorer_list.png'),
+      report: toDataUri('05_report_results.png'),
+    };
+  }
+
   const shots = [
-    ['00_home.png', homePage, { width: 1280, height: 620 }],
     ['01_explorer_treemap.png', explorerTreemapPage, { width: 1280, height: 720 }],
     ['02_explorer_list.png', explorerListPage, { width: 1280, height: 560 }],
+    ['05_report_results.png', reportResultsPage, { width: 1160, height: 640 }],
+    ['00_home.png', () => homePage(loadHomeImages()), { width: 1280, height: 620 }],
     ['03_report_config.png', reportConfigPage, { width: 1160, height: 220 }],
     ['04_report_running.png', reportRunningPage, { width: 1160, height: 280 }],
-    ['05_report_results.png', reportResultsPage, { width: 1160, height: 640 }],
     ['06_report_history.png', reportHistoryPage, { width: 1160, height: 420 }],
     ['07_settings.png', settingsPage, { width: 1280, height: 760 }],
   ];
