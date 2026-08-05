@@ -4,9 +4,41 @@ All notable changes to this project are documented here.
 
 ---
 
-## [1.3.0] — 2026-08-02
+## [1.3.0] — 2026-08-04
 
 ### Added
+
+- **Version-history measurement now escalates automatically to whatever actually works on a given
+  list, and always measures every eligible file**
+  Some lists don't project SharePoint's bulk version-size field at all; a few report it while
+  leaving it unpopulated, which previously produced a confident but wrong 0 B for the whole
+  library. The scan now proves a bulk mechanism actually carries real data (checking known file
+  sizes against it) before trusting it, escalating through an un-expanded bulk sweep, then a
+  CAML/`RenderListDataAsStream` sweep, and only then a per-file measurement pass — reserved for
+  files whose version number doesn't already prove they have nothing retained. There is no
+  longer a "Quick" cap that left some files unmeasured by design; every file that can have
+  retained versions is now measured, and the per-file pass runs fast enough for that to be
+  practical (requests are properly coalesced instead of running a few at a time).
+
+- **Version History Count total**
+  Alongside the existing Version History Size total, the Storage Report's summary tile and Excel
+  Summary sheet now also show the total number of retained versions across the whole scan — the
+  same free per-file count, just summed.
+
+- **Stage-by-stage scan progress, with an ETA and an explicit "paused" state**
+  The Storage Report's progress display now names exactly what's happening at every point in a
+  scan — reading items, checking how a list can report version history, sweeping it in bulk,
+  validating the result, or measuring per file — each with its own live count and, once there's
+  enough data to estimate from, a time-remaining estimate. When SharePoint is throttling requests,
+  the status line says so explicitly with a countdown, instead of the scan appearing to freeze. A
+  hover tooltip shows additional detail (requests made, files found vs. added to the report,
+  failed/unmeasured counts) without crowding the main display.
+
+- **Independent cross-check of the version-history total**
+  For each library, the version-history total measured per file is compared against an
+  independent figure derived from SharePoint's own folder-level Storage Metrics. Diagnostic only
+  (logged, not shown in the UI) — it exists to catch a systematic measurement error before it's
+  trusted.
 
 - **Home screen**
   The web part now opens on a landing screen with three cards — **Tree
@@ -52,6 +84,69 @@ All notable changes to this project are documented here.
   to the user. This is now surfaced the same way other incomplete
   measurements are: as `sizeApproximate` in Tree View / List View, and as a
   counted, detailed skipped-folder entry in the Storage Report.
+
+- **Saved Storage Report history no longer trims itself, and its "Partial"
+  badge is gone**
+  A saved report used to keep only its Stale/Very-stale rows once it
+  exceeded 50,000 files, flagged with a "Partial" badge — a mitigation for
+  loading every saved report's full listing just to render the history
+  list. History storage is now split into metadata (always loaded) and file
+  listings (loaded only when viewed or compared), so every saved report now
+  keeps every row. The only remaining trim is genuine storage exhaustion —
+  browser quota running out evicts the *oldest* report's listing (never its
+  summary) to make room, shown as a **"No file list"** badge instead.
+  Comparing two reports now also degrades per-field instead of all-or-
+  nothing: size and file-count deltas always work (they only need
+  summaries); new/resolved archival-candidate counts are shown only when
+  both reports' listings are actually available.
+
+- **`$batch` envelope throttling no longer amplifies into a burst of
+  individual requests**
+  A 429 on a coalesced `$batch` request was treated the same as a
+  structural failure (a rejected header, `$batch` unsupported) and fanned
+  out into one request per member — answering "you're sending too much"
+  with up to 50× more requests, against a tenant that had just asked to
+  slow down. A throttled batch now retries the whole envelope through the
+  same shared backoff every other request uses; per-member fan-out is
+  reserved for failures where the envelope itself will never work.
+
+- **Excel Summary sheet values are left-aligned**
+  Numeric values (file/stale counts) previously sat right-aligned next to
+  left-aligned text values (sizes, dates) in the same column, producing a
+  ragged edge. Every value on the sheet now aligns the same way.
+
+### Fixed
+
+- **A rejected bulk version-history field could either do nothing or cost
+  far more than necessary**
+  Two separate issues on lists where SharePoint won't project the bulk
+  version-size field: sharding used to give up on concurrency entirely
+  rather than risk losing version data, even though the field's absence is
+  now handled correctly by escalation; and the per-file fallback ran at a
+  worker count sized for the pre-`$batch` era (3 workers), so envelopes
+  never filled and measured roughly 3.5 files/second regardless of the
+  `$batch` coalescing meant to speed it up. Both are fixed — sharding is
+  re-enabled once the escalation can safely take over, and the per-file
+  pass now runs enough workers to keep `$batch` envelopes full.
+
+- **The Storage Report's progress bar and time estimate could both be
+  confidently wrong while work continued**
+  A stale item-count estimate that got exceeded mid-scan was clamped rather
+  than treated as unusable, which pegged the progress bar at 100% and could
+  show "~0s remaining" for many minutes on a long-running scan. Producers
+  now report no denominator at all once their own estimate is known to be
+  stale, which the display renders as an indeterminate bar and no time
+  estimate, rather than a wrong one.
+
+- **`ReportHistoryService.add()` could hang indefinitely on a storage
+  failure**
+  A synchronous exception from the underlying IndexedDB write (e.g. a
+  clone failure, or the transaction aborting on quota) was never caught,
+  so the returned promise neither resolved nor rejected — the scan
+  appeared to finish but silently never saved, with no warning shown.
+  Failures are now always caught and reported, and running out of quota no
+  longer fails the save outright: the oldest report's file listing is
+  freed first and the save is retried once before giving up.
 
 ---
 

@@ -1,57 +1,87 @@
 import { SpApiClient, valueArray, odata, SMALL_BATCH_SIZE } from './spCore';
-import { LibraryInfo, VersionScanMode } from '../../models/models';
+import { LibraryInfo } from '../../models/models';
 import { FlatItem, ITEMS_PAGE_SIZE } from './listItems';
-import { QUICK_VERSION_FILE_LIMIT } from '../../utils/settingsBounds';
 
 // Getting version-history SIZE for a library whose bulk field doesn't work.
 //
 // The happy path lives in listItems.ts: SMTotalFileStreamSize rides along in
 // the main item sweep and version size costs nothing at all. This module is
-// everything that happens when that field is rejected — which, on a real
-// tenant, it is: every attempt against one 193,915-item "Documents" library
-// 400s.
+// everything that happens when that field is rejected.
 //
-// The history here matters, because the obvious fix is a trap. The original
-// implementation answered a rejected bulk field by fetching every file's
-// /Versions collection individually. That is ~194,000 requests for one
-// library; measured on this tenant it ran 80 minutes without finishing, and a
-// comment in fileWalk.ts records an earlier attempt at the same thing running
-// "3+ hours and still incomplete". Correct and unusable.
+// WHAT IS ACTUALLY TRUE ON A REAL TENANT (measured, not theorised — an earlier
+// version of this comment asserted a theory that turned out to be wrong, and
+// that wrong theory shaped the code for several rounds):
+//   - `$select=…,SMTotalFileStreamSize` 400s with "The field or property
+//     'SMTotalFileStreamSize' does not exist." — WITH and WITHOUT $expand=File.
+//     So it is not an $expand collision, as was first assumed; the column is
+//     simply not projectable through OData on these lists.
+//   - RenderListDataAsStream DOES return the column, but every row reads 0 —
+//     present in the schema, never populated. A probe that only checks
+//     "parseable and non-zero somewhere" cannot tell that apart from real data,
+//     and adopting it produced a confident 0 B for a whole 184,859-file library.
+//   - Per-file /Versions works and is exact. With files at version 1.0 skipped
+//     for free (see FlatItem.versionsProvablyZero), a 184,859-file library has
+//     only 8,168 candidates, which completes quickly once requests are properly
+//     coalesced into $batch envelopes.
 //
-// So the order of preference is: prove a BULK mechanism works before spending
-// a single per-file request, and treat per-file as a bounded last resort
-// rather than the fallback. Each mechanism is introduced the way the rest of
-// this codebase introduces uncertain SharePoint techniques (see
-// probeMaxIdAndFields and the canary shard in listItems.ts): probe it small,
-// adopt it only on proof, degrade cleanly when it fails.
+// So: prove a BULK mechanism works before spending a single per-file request,
+// and make the proof cheap AND decisive. Each mechanism is introduced the way
+// this codebase introduces every uncertain SharePoint technique (see
+// probeMaxIdAndFields and the canary shard in listItems.ts): probe small, adopt
+// only on proof, degrade cleanly.
 
 export type VersionSizeStrategyKind =
   // Nothing to do — the main sweep already returned SMTotalFileStreamSize.
   | 'inline'
-  // The field IS selectable, just not alongside $expand=File. Sweep it on its
-  // own and join by Id. ~1 request per 5,000 items.
+  // The field IS selectable on its own, just not alongside $expand=File.
+  // Sweep it separately and join by Id. ~1 request per 5,000 items.
   | 'items-side-channel'
   // OData won't project the field at all, but the CAML/view renderer will.
   // Also ~1 request per 5,000 items, just POSTs instead of GETs.
   | 'render-list-data'
-  // No bulk mechanism works. One request per file, capped in Quick mode.
+  // No bulk mechanism works. One request per file — for EVERY file that could
+  // have retained versions. There used to be a Quick mode capping this; see
+  // ScanOptions.includeVersionHistory for why measurement retired it.
   | 'per-file'
-  // Nothing works and per-file wasn't permitted — report honestly, never zero.
+  // Nothing worked. Report honestly as unmeasured, never as zero.
   | 'none';
 
 export interface VersionSizeStrategy {
   kind: VersionSizeStrategyKind;
+  // Short human phrase for WHY this kind was chosen, e.g. 'OData will not
+  // project the field; the view renderer will'. Surfaced in the progress detail
+  // and stored on the summary, so the report explains itself without the user
+  // reading the console.
+  reason: string;
+}
+
+export type VersionStage = 'probe' | 'bulk-sweep' | 'validate' | 'per-file';
+
+export interface VersionProgressEvent {
+  stage: VersionStage;
+  // Always present. A stage with nothing to say is a stage that looks frozen —
+  // which is exactly what happened when the bulk paths reported nothing.
+  detail: string;
+  done?: number;
+  // undefined ⇒ indeterminate. Never clamp to make a bar look tidy.
+  total?: number;
+  unit?: 'pages' | 'files';
+  skipped?: number;
 }
 
 export interface VersionFillOptions {
   signal?: AbortSignal;
-  mode: VersionScanMode;
-  // Fired with (done, total) for the per-file path only — the bulk paths
-  // resolve a whole library in a handful of requests and have nothing
-  // meaningful to report in between. Already throttled at the source (see
-  // PROGRESS_EVERY_N / PROGRESS_EVERY_MS), so callers can wire it straight to
-  // setState without adding their own coalescing.
-  onProgress?: (done: number, total: number) => void;
+  // Fired by EVERY stage, not just per-file.
+  //
+  // This used to be documented as per-file-only because "the bulk paths resolve
+  // a whole library in a handful of requests and have nothing meaningful to
+  // report in between". That was the entire bug: on a 184,859-item library a
+  // bulk path is ~37 sequential heavyweight CAML POSTs, and the UI went silent
+  // for all of them — bar pegged at 100%, "~0s remaining", for eleven minutes.
+  //
+  // Already coalesced at the source for the per-file path (PROGRESS_EVERY_N /
+  // PROGRESS_EVERY_MS), so callers can wire this straight to setState.
+  onProgress?: (e: VersionProgressEvent) => void;
   // One file's version fetch failed (throttling exhausted, transient error).
   // Kept in scope rather than failing the library, same as a skipped folder.
   onSkipped?: () => void;
@@ -61,10 +91,12 @@ export interface VersionFillResult {
   strategy: VersionSizeStrategyKind;
   // Attempted and failed. Retrying (or lowering concurrency) could fix these.
   skipped: number;
-  // Never attempted, because Quick mode's budget ran out. Retrying changes
-  // nothing — only switching to Full does. Deliberately a separate number
-  // from `skipped`: conflating them would tell the user to fix throttling for
-  // a condition that has nothing to do with throttling.
+  // NEVER ATTEMPTED. Three causes, none of which retrying fixes: the scan was
+  // canceled mid-pass; no mechanism worked for the list at all (strategy
+  // 'none'); or the row was in the main item sweep but absent from the bulk
+  // version sweep. Deliberately separate from `skipped` — that one IS worth
+  // retrying, and conflating them tells the user to change a setting that
+  // cannot help.
   unmeasured: number;
 }
 
@@ -75,6 +107,11 @@ export interface VersionFillResult {
 // Report's own file counter a ref flushed on a timer rather than per-file
 // state (see scannedRef in StorageReportView.tsx).
 const PROGRESS_EVERY_N = 50;
+// Deliberately NOT backed by a timer of its own. During a throttle window
+// nothing completes, so no timer here could fire either — it is the VIEW's own
+// 500ms ticker plus SpApiClient.throttleRemainingSeconds that keeps the UI alive
+// and explains the pause. Adding a second timer in the data layer would produce
+// identical repeated events and still not say why nothing is moving.
 const PROGRESS_EVERY_MS = 500;
 
 // Version size is (current + retained) minus current, so it needs BOTH the
@@ -126,7 +163,16 @@ function rldasUrl(siteUrl: string, listId: string, nextHref?: string): string {
   return nextHref ? `${base}${nextHref}` : base;
 }
 
-function rldasBody(rowLimit: number): unknown {
+function rldasBody(rowLimit: number, restrictToIds?: number[]): unknown {
+  // Restricting to specific ids is what makes the probe DECISIVE — see
+  // pickProbeSample. ID is always indexed, so an In filter is exempt from the
+  // list view threshold on exactly the grounds listItems.ts already documents
+  // for its `Id gt/le` shard filters.
+  const where = restrictToIds?.length
+    ? `<Query><Where><In><FieldRef Name='ID'/><Values>`
+      + restrictToIds.map((id) => `<Value Type='Counter'>${id}</Value>`).join('')
+      + `</Values></In></Where></Query>`
+    : '';
   return {
     parameters: {
       // Scope='RecursiveAll' is MANDATORY and the most dangerous thing to omit
@@ -136,6 +182,7 @@ function rldasBody(rowLimit: number): unknown {
       // indistinguishable from "this library has little version history".
       ViewXml:
         `<View Scope='RecursiveAll'>`
+        + where
         + `<ViewFields><FieldRef Name='ID'/><FieldRef Name='${VERSION_FIELD_CAML}'/></ViewFields>`
         + `<RowLimit Paged='TRUE'>${rowLimit}</RowLimit>`
         + `</View>`,
@@ -144,121 +191,198 @@ function rldasBody(rowLimit: number): unknown {
   };
 }
 
+interface ProbeSample { id: number; sizeBytes: number; }
+
+// Rows the probe can be FALSIFIED against: files whose version label says they
+// DO have retained versions, so a populated SMTotalFileStreamSize must read
+// strictly greater than the current file size.
+//
+// Largest first, deliberately. A big file with versions has the biggest absolute
+// margin over its current size, which is what keeps a lagging-but-real metrics
+// value from being mistaken for an unpopulated column.
+//
+// Sampling the FIRST rows of the library instead (what the probe used to do)
+// does not work: those are overwhelmingly folders and ancient single-version
+// files, so the intersection with "files that should have versions" is usually
+// empty and the probe learns nothing.
+//
+// Copies before sorting — `items` is the caller's array and folder aggregation
+// walks it in order.
+function pickProbeSample(items: FlatItem[], want: number): ProbeSample[] {
+  return items
+    .filter((i) => !i.isFolder && !i.versionsProvablyZero && i.id != null && i.sizeBytes > 0)
+    .slice()
+    .sort((a, b) => b.sizeBytes - a.sizeBytes)
+    .slice(0, want)
+    .map((i) => ({ id: i.id!, sizeBytes: i.sizeBytes }));
+}
+
+// Verdict on a sampled set of (known size, reported total) pairs.
+//
+// Asymmetric ON PURPOSE. A wrong REJECT costs a slow-but-correct per-file pass.
+// A wrong ACCEPT produces a confident 0 B for an entire library — the failure
+// this module exists to prevent, and one a presence-only check already let
+// through on a real tenant.
+//
+//   value > sizeBytes        -> proof the column carries version storage
+//   value === 0              -> proof it is present but unpopulated
+//   0 < value <= sizeBytes   -> inconclusive for one row, damning across a
+//                               largest-first sample: the metrics job lags, but
+//                               not for the N biggest versioned files at once.
+function sampleProvesVersionStorage(pairs: { sizeBytes: number; value: number }[]): boolean {
+  if (pairs.length === 0) return false;
+  const proven = pairs.filter((p) => p.value > p.sizeBytes).length;
+  return proven >= Math.max(1, Math.ceil(0.10 * pairs.length));
+}
+
 /**
  * Decides how to get version size for one library, given that the main sweep
  * did NOT return it inline.
  *
- * Costs at most one small request. Never throws: an unusable library resolves
- * to a strategy, not an error, because a report that omits version history is
- * still a useful report.
+ * Costs at most two small requests, and is DECISIVE — it never adopts a
+ * mechanism that a ~37-request sweep would then have to discard. That mattered:
+ * before, this accepted RLDAS on "the column parses and something is non-zero",
+ * swept 184,859 items across ~37 CAML POSTs, and threw all of it away.
+ *
+ * `items` comes from the main sweep, which has already finished by the time this
+ * runs — so known file sizes are available to falsify a bulk field against, and
+ * that is what makes the decision cheap AND safe.
+ *
+ * Never throws: an unusable library resolves to a strategy, not an error,
+ * because a report that omits version history is still a useful report.
  */
 export async function probeVersionSizeStrategy(
   client: SpApiClient,
   siteUrl: string,
   library: LibraryInfo,
-  signal?: AbortSignal,
+  items: FlatItem[],
+  options: VersionFillOptions,
 ): Promise<VersionSizeStrategy> {
-  if (signal?.aborted || !library.id) return { kind: 'per-file' };
+  if (options.signal?.aborted || !library.id) {
+    return { kind: 'per-file', reason: 'canceled or no list id' };
+  }
 
-  // P1: the version field entirely on its own — no $expand, no $orderby, no
-  // $filter.
-  //
-  // This is the probe that was missing for several rounds of debugging, and
-  // it is the whole reason this module exists. EVERY previously-observed
-  // failure of SMTotalFileStreamSize on this tenant came from a URL that also
-  // carried `&$expand=File` (itemsUrl, probeUrl and shardUrl all append it
-  // unconditionally). A storage-metrics field colliding with a
-  // navigation-property expand is a known shape of SPO 400 — so "the field
-  // 400s" and "the field 400s WHEN EXPANDED" were never distinguished, and
-  // the app fell back to 194,000 requests on the strength of that conflation.
-  //
-  // If this succeeds, one library's version history costs ~39 requests
-  // instead of ~194,000.
+  const sample = pickProbeSample(items, RLDAS_PROBE_ROWS);
+  // No file in the library can have retained versions, so there is nothing to
+  // measure and nothing any mechanism could prove. Take the free answer.
+  if (sample.length === 0) {
+    return {
+      kind: 'items-side-channel',
+      reason: 'no file in this library has retained versions',
+    };
+  }
+  const sizeById = new Map(sample.map((s) => [s.id, s.sizeBytes]));
+
+  // ── P1: the field on its own — no $expand, no $orderby, no $filter ───────
+  // Kept as a presence-only test, deliberately. It costs one request; on this
+  // tenant it fails outright with "The field or property does not exist", and if
+  // it ever DOES succeed the sweep costs the same ~37 requests as the main one
+  // with versionTotalsLookCredible as the safety net. Falsifying it properly
+  // would need a second request to buy very little.
+  options.onProgress?.({
+    stage: 'probe',
+    detail: 'checking whether the version field selects on its own',
+  });
   try {
     const url = `${siteUrl}/_api/web/lists(guid'${library.id}')/items`
       + `?$select=${SIDE_CHANNEL_FIELDS}&$top=1`;
-    const data = await client.getJson(url, true);
-    const rows = valueArray(data);
-    // An empty library proves nothing about the field, but there is also
-    // nothing to measure — either strategy is a no-op, so take the cheap one.
-    if (rows.length === 0) return { kind: 'items-side-channel' };
+    const rows = valueArray(await client.getJson(url, true));
     // Presence, not truthiness: a genuinely zero-version file legitimately
-    // reports 0, and `0` must not be read as "field missing". A row that
-    // simply lacks the property is the failure case.
-    if ('SMTotalFileStreamSize' in rows[0] && rows[0].SMTotalFileStreamSize != null) {
+    // reports 0, and `0` must not be read as "field missing".
+    if (rows.length > 0 && 'SMTotalFileStreamSize' in rows[0] && rows[0].SMTotalFileStreamSize != null) {
+      const reason = 'the field selects on its own, just not alongside $expand=File';
       // eslint-disable-next-line no-console
-      console.info(
-        `[SmartStorageAnalyzer] ${library.title}: version-history size available via a ` +
-        'separate un-expanded sweep — the field is fine, it just cannot be combined with ' +
-        '$expand=File. Using the bulk side channel (no per-file requests).',
-      );
-      return { kind: 'items-side-channel' };
+      console.info(`[SmartStorageAnalyzer] ${library.title}: ${reason} — using the bulk side channel.`);
+      return { kind: 'items-side-channel', reason };
     }
   } catch {
-    // Fall through. No logging here: fetchLibraryItems has already logged the
-    // full 400 body for this library (see its field-negotiation catch), so a
-    // second message would just be noise.
+    // Fall through. fetchLibraryItems has already logged the full 400 body for
+    // this library, so a second message would just be noise.
   }
 
-  // P2: RenderListDataAsStream — the endpoint SharePoint's own modern UI
-  // drives. It projects fields through the view/CAML renderer rather than the
-  // OData projector, so it can return columns that $select rejects outright.
+  // ── P2: RenderListDataAsStream, falsified against known sizes ────────────
+  // RLDAS projects through the view/CAML renderer rather than the OData
+  // projector, so it can return columns $select rejects. On this tenant it DOES
+  // return the column — and every row reads 0, because the column exists in the
+  // schema and nothing populates it.
   //
-  // Built because P1 failed on a real tenant with
-  //   "The field or property 'SMTotalFileStreamSize' does not exist."
-  // on a bare `?$select=Id,SMTotalFileStreamSize&$top=1` — proving the earlier
-  // theory (that the field merely clashed with $expand=File) wrong. A field
-  // OData claims not to exist is exactly the case where a different projector
-  // is worth one request.
-  //
-  // Tempered expectation, recorded honestly: "does not exist" may mean the
-  // column is absent from the list SCHEMA, which RLDAS reads too — in which
-  // case this fails the same way and we fall through to per-file. One request
-  // to find out.
+  // So the probe asks for exactly the rows that can disprove that: the largest
+  // files whose version labels say they HAVE retained versions. For those,
+  // SMTotalFileStreamSize must exceed the current file size. An all-zero (or
+  // merely equal) answer is proof of an unpopulated column, not of a library
+  // without version history.
+  options.onProgress?.({
+    stage: 'probe',
+    detail: `checking the view renderer against ${sample.length} known-versioned files`,
+  });
   try {
-    // A sample, not one row. The field can be present on every row and
-    // populated on none — and one row is not enough to tell the difference,
-    // especially when the first rows of a library are often folders.
-    const data = await client.postJson(rldasUrl(siteUrl, library.id), rldasBody(RLDAS_PROBE_ROWS));
-    const rows: any[] = Array.isArray(data?.Row) ? data.Row : [];
-    if (rows.length === 0) return { kind: 'render-list-data' }; // nothing to measure
-    // Two separate things have to be true, and conflating them is the mistake
-    // this check exists to avoid:
-    //   1. the field comes back parseable at all (RLDAS will happily omit it), and
-    //   2. at least one row is NON-ZERO.
-    // SMTotalFileStreamSize counts the current version too, so any real file
-    // must report more than zero. An all-zero sample means the column exists in
-    // the schema but nothing populates it — which passes a presence-only check
-    // and then yields max(0, 0 - fileSize) = 0 for every file in the library.
-    // That is a confident, completely wrong 0 B, and it is exactly what a
-    // presence-only canary let through on a real tenant.
-    const parsed = rows.map((r) => parseDisplayInteger(r[VERSION_FIELD_CAML]));
-    const usable = parsed.filter((v): v is number => v !== undefined);
-    if (usable.length > 0 && usable.some((v) => v > 0)) {
+    const ids = sample.map((s) => s.id);
+    let rows = await rldasProbeRows(client, siteUrl, library.id, ids);
+    // Canary, per this file's own discipline: the ID-restricted CAML `In` filter
+    // is a technique this codebase hasn't used before. If it errors or matches
+    // nothing, fall back to an unrestricted sample rather than concluding
+    // anything from its silence.
+    if (rows === undefined || rows.length === 0) {
+      rows = await rldasProbeRows(client, siteUrl, library.id, undefined);
+    }
+    if (rows && rows.length > 0) {
+      const pairs = rows
+        .map((r) => ({
+          sizeBytes: sizeById.get(Number(r.ID)),
+          value: parseDisplayInteger(r[VERSION_FIELD_CAML]),
+        }))
+        // Only rows we know a size for can falsify anything. An unrestricted
+        // fallback sample will mostly drop out here, which is correct — it is
+        // weaker evidence and should behave that way.
+        .filter((p): p is { sizeBytes: number; value: number } =>
+          p.sizeBytes !== undefined && p.value !== undefined);
+
+      if (sampleProvesVersionStorage(pairs)) {
+        const reason = 'OData will not project the field; the view renderer will';
+        // eslint-disable-next-line no-console
+        console.info(`[SmartStorageAnalyzer] ${library.title}: ${reason} — using the bulk CAML sweep.`);
+        return { kind: 'render-list-data', reason };
+      }
       // eslint-disable-next-line no-console
       console.info(
-        `[SmartStorageAnalyzer] ${library.title}: version-history size available via ` +
-        'RenderListDataAsStream (OData will not project the field, the view renderer will). ' +
-        'Using the bulk CAML sweep — no per-file requests.',
+        `[SmartStorageAnalyzer] ${library.title}: the view renderer returns ${VERSION_FIELD_CAML} ` +
+        `but it is not populated (checked ${pairs.length} files that DO have retained versions; ` +
+        'none reported more than its current size). Measuring per file instead — which is correct, ' +
+        'just slower. No bulk sweep was spent finding this out.',
       );
-      return { kind: 'render-list-data' };
     }
-    // eslint-disable-next-line no-console
-    console.warn(
-      `[SmartStorageAnalyzer] ${library.title}: RenderListDataAsStream returned ` +
-      `${usable.length} of ${rows.length} sampled rows with a parseable ${VERSION_FIELD_CAML}, ` +
-      `all zero${usable.length === 0 ? '/absent' : ''} — the column is not populated with storage ` +
-      'data on this list. Falling back to per-file measurement.',
-    );
   } catch (err: any) {
     // eslint-disable-next-line no-console
     console.warn(
       `[SmartStorageAnalyzer] ${library.title}: RenderListDataAsStream probe failed — ` +
-      `${err?.message ?? String(err)}. Falling back to per-file measurement.`,
+      `${err?.message ?? String(err)}. Measuring per file instead.`,
     );
   }
 
-  return { kind: 'per-file' };
+  return {
+    kind: 'per-file',
+    reason: 'no bulk mechanism reports version storage on this list',
+  };
+}
+
+// One RLDAS probe request. Returns undefined (not an empty array) when the
+// request itself failed, so the caller can tell "the technique is unavailable"
+// from "the technique worked and matched nothing".
+async function rldasProbeRows(
+  client: SpApiClient,
+  siteUrl: string,
+  listId: string,
+  restrictToIds: number[] | undefined,
+): Promise<any[] | undefined> {
+  try {
+    const data = await client.postJson(
+      rldasUrl(siteUrl, listId),
+      rldasBody(RLDAS_PROBE_ROWS, restrictToIds),
+    );
+    return Array.isArray(data?.Row) ? data.Row : [];
+  } catch {
+    return undefined;
+  }
 }
 
 /**
@@ -290,18 +414,16 @@ export async function applyVersionSizes(
 // Cross-checks a bulk strategy's OUTPUT against what the version labels
 // already told us, and reports whether the numbers are self-consistent.
 //
-// This exists because a probe can only prove a field is PRESENT and numeric —
-// it cannot prove the field means what we assume. A field that exists in the
-// list schema but is never populated returns 0, which sails through any
-// presence check and then produces max(0, 0 - fileSize) = 0 for every single
-// file: a total of 0 B that looks like a successful bulk sweep. That happened
-// on a real tenant with RenderListDataAsStream.
+// KEEP THIS even though probeVersionSizeStrategy is now decisive. The probe
+// samples; this sees the whole library. A lucky sample — 100 files whose metrics
+// happened to be populated on a list where most are not — would pass the probe
+// and produce a badly under-counted total, and this is the only thing that would
+// catch it. It costs nothing: no requests, one pass over rows already in memory.
 //
-// The check is free, and it is the one contradiction the data can actually
-// expose: OData__UIVersionString (from the main sweep) independently says which
-// files have retained versions. If it says a population of files DOES have
-// them and the bulk field says every one of those is zero bytes, the bulk field
-// is not measuring version storage and must not be trusted.
+// The contradiction it exposes: OData__UIVersionString (from the main sweep)
+// independently says which files have retained versions. If it says a population
+// of files DOES have them and the bulk field says every one of those is zero
+// bytes, the bulk field is not measuring version storage.
 //
 // Note what this deliberately does NOT flag: a library where every file is at
 // version 1.0. There, `expected` is 0, there is no contradiction, and 0 B is
@@ -379,12 +501,30 @@ async function fillFromSideChannel(
   const url = `${siteUrl}/_api/web/lists(guid'${library.id}')/items`
     + `?$select=${SIDE_CHANNEL_FIELDS}&$top=${ITEMS_PAGE_SIZE}`;
 
+  const pagesHint = library.itemCount && library.itemCount > 0
+    ? Math.max(1, Math.ceil(library.itemCount / ITEMS_PAGE_SIZE))
+    : undefined;
+
   let rows: any[];
   try {
     // skipBatch for the same reason the main sweep does it: a 5,000-row page
     // is the wrong shape for $batch, which exists to amortize many SMALL
     // requests (see getJson's docstring).
-    rows = await client.getJsonPaged(url, options.signal, 400, true);
+    //
+    // The onPage callback is the fix for a silent window: this argument used to
+    // be omitted, so a ~37-request sweep of a large library reported absolutely
+    // nothing while it ran.
+    rows = await client.getJsonPaged(url, options.signal, 400, true, (_n, _rows, pagesDone) => {
+      options.onProgress?.({
+        stage: 'bulk-sweep',
+        detail: pagesHint
+          ? `reading version metadata — page ${pagesDone} of ~${pagesHint}`
+          : `reading version metadata — page ${pagesDone}`,
+        done: pagesDone,
+        total: pagesHint != null && pagesDone <= pagesHint ? pagesHint : undefined,
+        unit: 'pages',
+      });
+    });
   } catch (err: any) {
     // The probe succeeded and the sweep then failed — throttling, most
     // likely. Report the library's version history as unmeasured rather than
@@ -412,12 +552,38 @@ async function fillFromSideChannel(
   const unmeasured = applyTotalsById(items, totalById);
   // Same output validation as the RLDAS path — a present-but-unpopulated field
   // fails identically whichever projector returned it.
-  if (!versionTotalsLookCredible(library, items, 'the un-expanded items sweep')) {
-    clearBulkVersionSizes(items);
+  if (!await validateOrFallBack(library, items, 'the un-expanded items sweep', options)) {
     return fillPerFile(client, siteUrl, items, options);
   }
 
   return { strategy: 'items-side-channel', skipped: 0, unmeasured };
+}
+
+// Announces the validation stage, runs it, and rolls back a rejected bulk result
+// so the per-file pass sees "not measured" rather than a stale zero.
+//
+// Returns true to keep the bulk result, false when the caller must fall back.
+async function validateOrFallBack(
+  library: LibraryInfo,
+  items: FlatItem[],
+  strategyLabel: string,
+  options: VersionFillOptions,
+): Promise<boolean> {
+  options.onProgress?.({
+    stage: 'validate',
+    detail: 'checking the bulk version figures against version labels',
+  });
+  // Yield one macrotask so the label above actually paints.
+  // versionTotalsLookCredible is synchronous over every row in the library
+  // (~185,000 on a real one); without a yield, the emit that announces it
+  // commits state the browser never gets a frame to render, and a rejected bulk
+  // result would jump straight from "sweeping" to "measuring per file" with no
+  // explanation of the pause in between.
+  await new Promise((r) => setTimeout(r, 0));
+
+  if (versionTotalsLookCredible(library, items, strategyLabel)) return true;
+  clearBulkVersionSizes(items);
+  return false;
 }
 
 // ── Bulk: RenderListDataAsStream (CAML/view renderer) ─────────────────────
@@ -429,16 +595,33 @@ async function fillFromRenderListData(
   items: FlatItem[],
   options: VersionFillOptions,
 ): Promise<VersionFillResult> {
+  const pagesHint = library.itemCount && library.itemCount > 0
+    ? Math.max(1, Math.ceil(library.itemCount / ITEMS_PAGE_SIZE))
+    : undefined;
   const totalById = new Map<number, number>();
   let nextHref: string | undefined;
+  let rowsSoFar = 0;
   try {
     for (let page = 0; page < RLDAS_MAX_PAGES; page++) {
       if (options.signal?.aborted) break;
+      // Emitted BEFORE the request, not only after it. Each of these is a
+      // 5,000-row CAML render that can take seconds; reporting only on
+      // completion leaves the slowest moment of each page unaccounted for.
+      options.onProgress?.({
+        stage: 'bulk-sweep',
+        detail: pagesHint
+          ? `reading version metadata — page ${page + 1} of ~${pagesHint}`
+          : `reading version metadata — page ${page + 1}`,
+        done: page,
+        total: pagesHint != null && page < pagesHint ? pagesHint : undefined,
+        unit: 'pages',
+      });
       const data = await client.postJson(
         rldasUrl(siteUrl, library.id!, nextHref),
         rldasBody(ITEMS_PAGE_SIZE),
       );
       const rows: any[] = Array.isArray(data?.Row) ? data.Row : [];
+      rowsSoFar += rows.length;
       for (const row of rows) {
         const id = Number(row.ID);
         if (!isFinite(id)) continue;
@@ -446,6 +629,13 @@ async function fillFromRenderListData(
         if (total === undefined) continue;
         totalById.set(id, total);
       }
+      options.onProgress?.({
+        stage: 'bulk-sweep',
+        detail: `read ${rowsSoFar.toLocaleString()} rows of version metadata`,
+        done: page + 1,
+        total: pagesHint != null && page + 1 <= pagesHint ? pagesHint : undefined,
+        unit: 'pages',
+      });
       // RLDAS signals "more rows" by handing back a NextHref to echo. Absent
       // (or unchanged) means done — the unchanged check is a loop guard, since
       // a repeated token would otherwise re-fetch the same page forever.
@@ -472,8 +662,7 @@ async function fillFromRenderListData(
   // versionTotalsLookCredible. If the field turns out not to carry version
   // storage on this list, discard it and pay for per-file measurement rather
   // than reporting a confident 0 B.
-  if (!versionTotalsLookCredible(library, items, 'RenderListDataAsStream')) {
-    clearBulkVersionSizes(items);
+  if (!await validateOrFallBack(library, items, 'RenderListDataAsStream', options)) {
     return fillPerFile(client, siteUrl, items, options);
   }
 
@@ -529,25 +718,25 @@ async function fillPerFile(
   items: FlatItem[],
   options: VersionFillOptions,
 ): Promise<VersionFillResult> {
-  // Files whose version label already proves zero are skipped outright. This
-  // is the single largest reduction available on the per-file path and it
-  // costs nothing: the label came free in the main sweep, and in a typical
-  // library the large majority of files sit at version 1.0.
-  const candidates = items.filter((i) => !i.isFolder && !i.versionsProvablyZero);
+  // Two free eliminations, applied before a single request is issued:
+  //
+  //  - versionsProvablyZero: the version label already proves the file has
+  //    nothing in its /Versions collection. This is the single largest reduction
+  //    available anywhere on this path — on a real 184,859-file library it left
+  //    only 8,168 candidates — and it costs nothing, because the label rode
+  //    along in the main sweep.
+  //  - sizeBytes === 0: a zero-byte file (a placeholder, a .url stub, an empty
+  //    OneNote section) has no version bytes worth a request. Removes requests,
+  //    never changes a total.
+  const files = items.filter((i) => !i.isFolder);
+  const targets = files.filter((i) => !i.versionsProvablyZero && i.sizeBytes > 0);
+  const provablyZero = files.length - targets.length;
 
+  // The ONLY writer of `unmeasured` on this path now. There used to be a Quick
+  // mode that capped `targets` and counted the remainder here; every file that
+  // can have retained versions is measured now, so the only way to leave one
+  // unmeasured is to be canceled partway.
   let unmeasured = 0;
-  let targets = candidates;
-  if (options.mode === 'quick' && candidates.length > QUICK_VERSION_FILE_LIMIT) {
-    // Spend the budget on the LARGEST files. Retained-version bytes correlate
-    // strongly with current file size, so the biggest N files hold most of
-    // the version storage; capping an arbitrary N would bound the cost just
-    // as well but leave the answer close to meaningless.
-    //
-    // Copy before sorting — `items` is the caller's array and its order is
-    // load-bearing elsewhere (folder aggregation walks it as-is).
-    targets = candidates.slice().sort((a, b) => b.sizeBytes - a.sizeBytes).slice(0, QUICK_VERSION_FILE_LIMIT);
-    unmeasured = candidates.length - targets.length;
-  }
   if (targets.length === 0) {
     return { strategy: 'per-file', skipped: 0, unmeasured };
   }
@@ -562,9 +751,26 @@ async function fillPerFile(
     if (!force && done - lastEmitDone < PROGRESS_EVERY_N && now - lastEmitAt < PROGRESS_EVERY_MS) return;
     lastEmitAt = now;
     lastEmitDone = done;
-    options.onProgress?.(done, total);
+    options.onProgress?.({
+      stage: 'per-file',
+      detail: `${done.toLocaleString()} of ${total.toLocaleString()} files`
+        + (skipped > 0 ? ` · ${skipped.toLocaleString()} failed` : ''),
+      done,
+      total,
+      unit: 'files',
+      skipped,
+    });
   };
-  emit(true);
+  // Announced before any request, and it answers the question the numbers
+  // otherwise provoke — why a 184,859-file library only measures 8,168.
+  options.onProgress?.({
+    stage: 'per-file',
+    detail: `${total.toLocaleString()} of ${files.length.toLocaleString()} files need measuring`
+      + (provablyZero > 0 ? ` — ${provablyZero.toLocaleString()} have no retained versions` : ''),
+    done: 0,
+    total,
+    unit: 'files',
+  });
 
   // How many workers run here is NOT a throttling decision, and treating it
   // like one is a mistake worth spelling out, because it was made here.
@@ -587,9 +793,10 @@ async function fillPerFile(
   // one request at a time.
   const VERSION_PENDING_TARGET = SMALL_BATCH_SIZE * 3;
   const concurrency = Math.min(targets.length, Math.max(client.scanConcurrency, VERSION_PENDING_TARGET));
-  // Index-based workers rather than an array of closures: Full mode can have
-  // ~194,000 targets, and materializing a closure per file (which is what
-  // runConcurrent's signature requires) is pure waste at that size.
+  // Index-based workers rather than an array of closures: this path is now
+  // uncapped, so a pathological library could have ~190,000 targets, and
+  // materializing a closure per file (which runConcurrent's signature requires)
+  // is pure waste at that size.
   let next = 0;
   const worker = async (): Promise<void> => {
     for (;;) {

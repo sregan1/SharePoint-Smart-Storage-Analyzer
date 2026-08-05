@@ -6,17 +6,6 @@ export enum CandidateTier {
   VeryStale = 'VeryStale',
 }
 
-// How hard to work for version-history size on a library where no BULK
-// mechanism for it exists and the only option left is one request per file
-// (see services/sp/versionSizes.ts). Both modes behave identically whenever a
-// bulk mechanism does work — which is the common case — so this only bites on
-// lists where SharePoint won't project SMTotalFileStreamSize at all.
-//
-// Declared here rather than in versionSizes.ts because listItems.ts,
-// fileWalk.ts and the UI all need it, and routing the type through the module
-// that also owns FlatItem would make those files circularly dependent.
-export type VersionScanMode = 'quick' | 'full';
-
 export interface LibraryInfo {
   title: string;
   // List GUID. Addressing the list by id rather than title for the bulk
@@ -100,47 +89,98 @@ export interface ScanOptions {
   veryStaleDays: number;
   scanConcurrency: number;
   // Opt-in: collect version-history size alongside current file size. Usually
-  // free (it rides along in the bulk item sweep), but on a list where
-  // SharePoint won't project the metrics field it escalates — see
-  // versionScanMode and services/sp/versionSizes.ts.
+  // free (it rides along in the bulk item sweep); on a list that won't project
+  // the metrics field it escalates through services/sp/versionSizes.ts, which
+  // measures EVERY file that could have retained versions.
+  //
+  // There is deliberately no "how thorough" option here any more. There was a
+  // Quick/Full choice, capping the per-file pass at the largest 5,000 files per
+  // library; measurement retired it. On a real 184,859-file library only 8,168
+  // files are candidates at all (version labels prove the rest have nothing),
+  // the capped run and the complete run agreed to 0.06%, and the complete run
+  // was fast. A user-facing decision that changes almost nothing is worse than
+  // no decision.
   includeVersionHistory: boolean;
-  // Only consulted when includeVersionHistory is true AND the escalation
-  // reaches its per-file last resort. Defaults to 'quick' at the call site.
-  versionScanMode?: VersionScanMode;
   // Cooperative cancellation only: checked between queued tasks/libraries/
   // sites, not passed into in-flight HTTP requests. A scan can be many
   // minutes long with no other way to stop it short of leaving the page.
   signal?: AbortSignal;
 }
 
+// Every distinct thing a scan can be doing. Each one either has an honest
+// denominator or admits it doesn't — see stageTotal.
+//
+// This exists because the previous two-value `phase` could not name most of
+// what a scan actually does. A library whose list won't project the version
+// field goes: items sweep -> strategy probe -> bulk version sweep -> validate
+// -> per-file measurement. Only the first and last had a phase, so the middle
+// three (up to ~37 heavyweight requests) had nowhere to report from and the UI
+// sat frozen through them.
+export type ScanStage =
+  | 'discovering'        // subsites + library lists; no denominator
+  | 'items'              // flat item sweep of one library
+  | 'version-probe'      // deciding how version size can be read for one list
+  | 'version-bulk'       // the bulk version sweep the probe chose
+  | 'version-validate'   // cross-checking a bulk result before trusting it
+  | 'version-per-file';  // one request per file — the last resort
+
 export interface ScanProgress {
-  message: string;
-  scanned: number;
+  stage: ScanStage;
+  // A verb phrase with no target and no punctuation ('Reading items',
+  // 'Measuring version history'). Producers must NOT build whole sentences:
+  // the view composes the status line, and two prose styles fighting on screen
+  // is how this display became a wall of text once already.
+  stageLabel: string;
+  // What is happening right now, short enough for one line
+  // ('page 12 of ~37', '1,204 of 8,168 files').
+  detail?: string;
+  libraryTitle?: string;
+  // Set only when the scan actually spans more than one site, so a single-site
+  // scan doesn't carry a redundant segment.
+  siteLabel?: string;
+
   libsDone: number;
   libsTotal: number;
-  // Running count of raw items (files AND folders) read across every
-  // library so far this scan — the same unit totalItemsHint below is in, so
-  // the two divide cleanly into a completion fraction/ETA. Distinct from
-  // `scanned`, which counts FILES only (what the UI reports as progress),
-  // since a library's raw read includes folder rows too.
-  itemsFetched?: number;
-  // Sum of LibraryInfo.itemCount across every library this scan will visit,
-  // known once site + library discovery finishes. A hint, not a guarantee —
-  // ItemCount can be stale — so it's undefined (not 0) when it couldn't be
-  // computed, and callers must treat that as "no estimate available" rather
-  // than "0 items expected".
+
+  // ── The current stage's own progress, in its own unit ───────────────────
+  // stageTotal is undefined whenever there is no denominator worth drawing a
+  // bar against — INCLUDING when an estimate has been overrun. The producer
+  // owns that judgement, because it is the only thing that knows whether its
+  // own estimate still holds; the view's rule is simply "no total, no bar, no
+  // ETA". That inversion is deliberate: the old code clamped instead, which
+  // pegged the bar at 100% and printed "~0s remaining" for eleven minutes
+  // while a third of the work was still to come.
+  stageDone?: number;
+  stageTotal?: number;
+  stageUnit?: 'items' | 'pages' | 'files';
+  // Identity of the current determinate run, e.g. 'site|Documents|items' or
+  // 'site|Documents|perfile:8168'. The view restarts its rate window when this
+  // changes. Composed by the producer rather than inferred by the view because
+  // only the producer knows when a run genuinely restarts — the previous
+  // version keyed on the phase name, which was the constant 'items' for every
+  // library in the scan, so one library inherited the whole scan's average
+  // rate.
+  stageKey: string;
+
+  // ── Cumulative across the whole scan ───────────────────────────────────
+  itemsFetched?: number;   // raw rows (files AND folders) read so far
+  // Sum of LibraryInfo.itemCount across every library this scan will visit.
+  // A COUNTER ONLY — never the bar and never the ETA. ItemCount is routinely
+  // stale, so this gets reached and exceeded mid-scan; using it as a
+  // denominator is what produced the false "finished" state above.
   totalItemsHint?: number;
-  // Which phase of a library's scan this update is about. The two phases
-  // measure DIFFERENT units (items read vs files measured), so the UI must
-  // scope its progress bar and rate estimate to one phase at a time rather
-  // than averaging across them — see StorageReportView's ETA.
-  //
-  // 'versions' only ever appears for the per-file escalation; the bulk
-  // strategies finish in a handful of requests and never report a phase.
-  phase?: 'items' | 'versions';
-  // Progress within a 'versions' phase. Both undefined outside it.
-  versionsDone?: number;
-  versionsTotal?: number;
+  // Files identified during sweeps (FSObjType 0), known the instant each page
+  // lands. Monotonic, and an upper bound on what the report will contain.
+  // This is the number that can honestly move early — see `scanned`.
+  filesSeen: number;
+  // Files COMMITTED to the report. Necessarily lags filesSeen: an entry may
+  // not be published while its versionSizeBytes can still change, so a
+  // library's entries all appear at once after its version work finishes.
+  // Converges with filesSeen per library.
+  scanned: number;
+  skippedVersions: number;
+  unmeasuredVersions: number;
+  skippedLibraries: number;
 }
 
 export interface StorageReportSummary {
@@ -169,25 +209,40 @@ export interface StorageReportSummary {
   // in-scope rather than aborting, same as skippedFolders/skippedSites above.
   // Retrying, or lowering concurrency, can genuinely help these.
   skippedVersions?: number;
-  // Version-history measurements that were NEVER ATTEMPTED: Quick mode's
-  // per-library budget ran out, the scan was canceled mid-pass, or no
-  // mechanism for version size worked on that list at all.
-  //
-  // Deliberately separate from skippedVersions. Conflating the two would tell
-  // the user to retry or lower concurrency for a condition that retrying
-  // cannot change — the fix here is switching to a Full scan, or nothing.
+  // Version-history measurements NEVER ATTEMPTED, as opposed to attempted and
+  // failed (skippedVersions above). Three causes now, none of which retrying at
+  // a lower concurrency fixes:
+  //   - the scan was canceled while the per-file pass was still running
+  //   - no version-size mechanism worked on that list at all (strategy 'none')
+  //   - the row was in the main item sweep but not in the bulk version sweep
+  //     (created or deleted between the two)
+  // Deliberately separate from skippedVersions: THAT one is worth retrying, and
+  // conflating them tells the user to change a setting that cannot help.
   unmeasuredVersions?: number;
   // Which mechanism actually produced the version numbers, for the libraries
-  // that needed an escalation ('items-side-channel', 'per-file', 'none', …).
-  // Diagnostic: it is the difference between a ~40-request answer and a
-  // ~194,000-request one, and the user cannot otherwise tell which they got.
+  // that needed an escalation ('items-side-channel', 'render-list-data',
+  // 'per-file', 'none'). Diagnostic, and load-bearing for the UI: it is the
+  // difference between a ~40-request answer and a per-file one, and nothing
+  // else on screen would tell the user which they got.
   versionSizeStrategy?: string;
-  // Which mode this scan ran in, so a report loaded from history explains its
-  // own numbers rather than being read against the current UI selection.
-  versionScanMode?: VersionScanMode;
+  // LEGACY, READ-ONLY. Written only by builds that had a Quick/Full choice;
+  // nothing assigns it any more. Kept because a report loaded from history must
+  // explain ITS OWN numbers — an old Quick report's unmeasuredVersions means
+  // "the budget ran out, re-run to measure them", a cause no current scan can
+  // have, and without this field the UI would describe it using the current
+  // build's wording and name the wrong reason.
+  //
+  // Note the asymmetry with ScanOptions, which no longer has this field at all:
+  // ScanOptions describes how a FUTURE scan runs (no longer a choice), this
+  // describes what a PAST scan did (a historical fact). Don't "tidy" it away.
+  versionScanMode?: 'quick' | 'full';
   // Sum of FileEntry.versionSizeBytes across all entries. Only meaningful
   // when versionHistoryIncluded is true — see that field's comment.
   totalVersionSizeBytes?: number;
+  // Sum of FileEntry.versionCount across all entries — the retained-version
+  // COUNT analogue of totalVersionSizeBytes above. Free: versionCount is
+  // already on every entry, this just adds it up the same way size is summed.
+  totalVersionCount?: number;
   // Whether this particular scan collected version-history data. Needed
   // because totalVersionSizeBytes === 0 is ambiguous between "no old
   // versions exist" and "the toggle was off" (or this report predates the
@@ -195,30 +250,47 @@ export interface StorageReportSummary {
   versionHistoryIncluded?: boolean;
 }
 
-export interface StoredReport {
+// A saved report WITHOUT its file listing.
+//
+// The listing lives in a separate IndexedDB store and is loaded only when
+// something actually needs it (see ReportHistoryService). That split is what
+// makes complete reports possible at all: the history list, its badges, and
+// report diffing all read nothing but the fields below, and loading every
+// report's full entries just to render a row of dates put ~1.8M objects in
+// memory and forced a row cap that silently dropped 12% of a real report.
+export interface StoredReportMeta {
   id: string;
   timestamp: number;
   siteUrl: string;
   options: Pick<ScanOptions,
-    'includeSubsites' | 'staleDays' | 'veryStaleDays' | 'includeVersionHistory' | 'versionScanMode'>;
+    'includeSubsites' | 'staleDays' | 'veryStaleDays' | 'includeVersionHistory'>;
   summary: StorageReportSummary;
+  // How many rows the listing holds. Shown in the UI and used to size the
+  // "loading listing" state, so neither has to fetch the listing to find out.
+  entryCount: number;
+  // True when the file listing is NOT retrievable — it was evicted to make room
+  // for a newer report, or it never fit. Deliberately NOT called "truncated":
+  // nothing about the scan or the summary is partial, and the previous wording
+  // ("Partial") read as though the numbers themselves were incomplete.
+  listingEvicted?: boolean;
+}
+
+// Meta plus the listing. Only materialised when a listing is actually loaded.
+export interface StoredReport extends StoredReportMeta {
   entries: FileEntry[];
-  // Set when `entries` holds only stale/very-stale rows because the full
-  // scan exceeded the stored-history row cap (see StorageReportView) — kept
-  // small enough that 10 large scans don't strain IndexedDB quota. The
-  // summary and diffing (diffReports only reads stale-tier paths + summary
-  // fields) stay fully accurate either way; only the "View" file listing is
-  // incomplete for a truncated report.
-  entriesTruncated?: boolean;
 }
 
 export interface ReportDiff {
   olderTimestamp: number;
   newerTimestamp: number;
+  // From the summaries, which are always stored — so always available.
   sizeDeltaBytes: number;
-  newStaleCount: number;
-  resolvedStaleCount: number;
   totalFilesDelta: number;
+  // Need both reports' FILE LISTINGS to compare individual paths, and a listing
+  // can be evicted when browser storage runs short. Undefined means "could not
+  // be determined", which is deliberately distinct from 0 ("nothing changed").
+  newStaleCount?: number;
+  resolvedStaleCount?: number;
 }
 
 // A single rectangle-ready node consumed by the Treemap renderer — the

@@ -120,12 +120,29 @@ export interface FlatItem {
   authorLoginName?: string;
 }
 
+// One update from a library's item sweep, fired per page (so roughly once per
+// request — pages are 5,000 items).
+export interface ItemSweepProgress {
+  // Raw rows so far in this library: files AND folders.
+  items: number;
+  // Of those, actual files (FSObjType 0). The ONLY honest "files" count that
+  // exists before the report is allowed to publish entries, which is why the
+  // status line can show movement during a long sweep instead of a flat zero.
+  files: number;
+  pagesDone: number;
+  // undefined once unknown OR overrun — see the emitters below. A stale
+  // ItemCount that under-estimates makes pagesDone exceed this, and reporting a
+  // clamped fraction from that point is what pegged the progress bar at 100%
+  // while a third of the work remained.
+  pagesTotal?: number;
+}
+
 export interface FetchItemsOptions {
   signal?: AbortSignal;
-  // Fired per page with the running item total, so a long sweep can show
-  // real movement. Pages are 5,000 items, so this fires roughly once per
-  // request rather than continuously.
-  onProgress?: (fetchedSoFar: number) => void;
+  // Fired per page. See ItemSweepProgress — this used to be a bare
+  // `(fetchedSoFar: number)`, which gave the UI no way to distinguish files
+  // from folder rows and no denominator of its own.
+  onProgress?: (p: ItemSweepProgress) => void;
   // Fired (at most once per library) when SMTotalFileStreamSize could not be
   // selected, so the returned items carry no inline version size. The version
   // ESCALATION itself deliberately lives in the caller (fileWalk.ts) rather
@@ -361,7 +378,9 @@ async function fetchIdRange(
   rangeStart: number,
   rangeEnd: number,
   signal: AbortSignal | undefined,
-  onPage: (count: number) => void,
+  // Handed the rows themselves rather than just a count, so the shared
+  // accumulator can classify files vs folders without a second pass.
+  onPage: (pageRows: any[]) => void,
 ): Promise<any[]> {
   const rows: any[] = [];
   let cursor = rangeStart;
@@ -370,7 +389,7 @@ async function fetchIdRange(
     const data = await client.getJson(next, true);
     const pageRows = valueArray(data);
     rows.push(...pageRows);
-    onPage(pageRows.length);
+    onPage(pageRows);
     const nextLink = data?.['odata.nextLink'] ?? data?.['@odata.nextLink'];
     if (nextLink) {
       next = nextLink;
@@ -458,10 +477,25 @@ async function fetchLibraryItemsSharded(
   }
   if (ranges.length === 0) return [];
 
-  let fetchedSoFar = 0;
-  const onPage = (count: number): void => {
-    fetchedSoFar += count;
-    options?.onProgress?.(fetchedSoFar);
+  // Shared across every shard, so the reported totals are the library's, not
+  // one shard's. pagesTotal is EXACT here — the ranges are all computed up
+  // front, so the page count is known before the first request goes out, which
+  // is strictly better than the sequential path's ItemCount-derived guess.
+  let itemsSoFar = 0;
+  let filesSoFar = 0;
+  let pagesDone = 0;
+  const onPage = (pageRows: any[]): void => {
+    itemsSoFar += pageRows.length;
+    for (const r of pageRows) if (Number(r.FSObjType ?? 0) === 0) filesSoFar++;
+    pagesDone++;
+    options?.onProgress?.({
+      items: itemsSoFar,
+      files: filesSoFar,
+      pagesDone,
+      // A shard needing a second internal page (a density mis-estimate) makes
+      // this overrun; report no denominator rather than a fraction over 1.
+      pagesTotal: pagesDone <= ranges.length ? ranges.length : undefined,
+    });
   };
 
   // Canary: fetch the first shard ALONE before trusting the ID-filter
@@ -546,9 +580,17 @@ export async function fetchLibraryItems(
     `${BASE_FIELDS},${SIZE_FIELDS},${VERSION_LABEL_FIELD}`,
   ];
 
+  // Page count derived from ItemCount — a HINT, unlike the sharded path's exact
+  // range count. Reported only while it still holds; see the overrun guard in
+  // the callback below.
+  const pagesHint = library.itemCount && library.itemCount > 0
+    ? Math.max(1, Math.ceil(library.itemCount / ITEMS_PAGE_SIZE))
+    : undefined;
+
   let lastError: any;
   for (let i = 0; i < attempts.length; i++) {
     if (options?.signal?.aborted) return [];
+    let filesSoFar = 0;
     try {
       const raw = await client.getJsonPaged(
         itemsUrl(siteUrl, library.id, attempts[i]),
@@ -557,7 +599,21 @@ export async function fetchLibraryItems(
         // which is far past what SharePoint supports in a single list.
         400,
         true, // skipBatch
-        options?.onProgress,
+        (fetchedSoFar, pageRows, pagesDone) => {
+          // One integer compare per row, over rows already parsed and resident
+          // — immeasurable next to the JSON.parse of a 5,000-row page.
+          for (const r of pageRows) if (Number(r.FSObjType ?? 0) === 0) filesSoFar++;
+          options?.onProgress?.({
+            items: fetchedSoFar,
+            files: filesSoFar,
+            pagesDone,
+            // A stale ItemCount that under-estimates makes pagesDone overrun.
+            // Dropping the denominator from that point is not cosmetic: a
+            // clamped fraction pegs the bar at 100% while work continues, which
+            // is precisely the bug this rework exists to fix.
+            pagesTotal: pagesHint != null && pagesDone <= pagesHint ? pagesHint : undefined,
+          });
+        },
       );
       const items = raw.map(toItem);
       // The reduced field set won, so nothing here carries inline version

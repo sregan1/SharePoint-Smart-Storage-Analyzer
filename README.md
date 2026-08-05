@@ -50,15 +50,15 @@ Scan a site — and optionally its subsites — and export a report of archival 
 | Feature | Description |
 |---|---|
 | **Configurable scope** | Include subsites and hidden/system libraries in the scan |
-| **Concurrent, throttling-aware scan** | Adjustable request concurrency with a live progress bar, file count, and elapsed timer |
+| **Concurrent, throttling-aware scan** | Adjustable request concurrency with a stage-by-stage progress display (what's being read, a per-stage count, an ETA once there's enough data to estimate from) and an explicit "paused, waiting on SharePoint" state instead of an apparent freeze |
 | **Cancelable scans** | Stop a running scan and still see the partial results collected so far (not saved to history) |
-| **Version history size & count** | Optional toggle that adds per-file version-history size and count columns and a summary tile for the size total across the scan — additive to Total size, not included in it |
+| **Version history size & count** | Optional toggle that adds per-file version-history size and count columns, plus summary tiles for the total size and total retained-version count across the scan — additive to Total size, not included in it. Free on most libraries (it rides the same bulk read); on a list that won't report it in bulk, only files that can actually have retained versions are measured individually |
 | **Partial-scan reporting** | Folders/subsites that fail to read (permissions, throttling), and files whose version history specifically couldn't be read, are called out with a warning, expandable per-item error details, and a copy-to-clipboard action, instead of silently under-reporting |
 | **Archival tiering** | Every file is classified Active, Stale, or Very stale based on configurable last-modified thresholds |
 | **In-browser results table** | Sortable results with a toggle to show only archival candidates |
 | **Excel export** | Color-coded `.xlsx` workbook with a Summary sheet and a full file-level Details sheet; filename prefixed with the site name |
 | **CSV export** | Plain-text alternative for scripted processing; filename prefixed with the site name |
-| **Scan history** | Past scans persist in IndexedDB (10 most recent), with cross-site visibility toggle and an automatic "Partial" badge for oversized reports where only stale-tier rows were retained |
+| **Scan history** | Past scans persist in IndexedDB (10 most recent), with a cross-site visibility toggle. Every saved report keeps its complete file listing — there's no row cap; if browser storage genuinely runs out of room, the *oldest* report's listing (never its summary) is evicted to make room, flagged with a "No file list" badge |
 | **Report compare** | Diff two saved scans to see size change, new archival candidates, and resolved items over time — with a warning if the two scans are from different sites |
 
 ---
@@ -199,7 +199,7 @@ config/
 
 **"npm install fails" or build errors about Node version** — This project requires Node 18.x exactly (`>=18.17.1 <19.0.0`). Run `node --version` to confirm. Use `nvm` or `nvm-windows` to switch versions.
 
-**"The Storage Report scan takes a very long time"** — Scan time scales with file count and, if enabled, the number of subsites or version-history lookups. Narrow the scope in Settings (disable subsites, hidden libraries, or version history) or lower scan concurrency if you're seeing throttling (HTTP 429) errors.
+**"The Storage Report scan takes a very long time"** — Scan time scales with file count and, if enabled, the number of subsites. Version history is normally free (it rides along in the same bulk read), but a list that won't report it in bulk has to be measured one file at a time; the progress display names the stage that's running and gives a per-stage estimate. Narrow the scope in Settings (disable subsites, hidden libraries, or version history) or lower scan concurrency if you're seeing throttling (HTTP 429) errors.
 
 **"An error mentions HTTP 406"** — this is SharePoint throttling, not a bad request: a 406 occurs when SharePoint redirects an over-limit request to an HTML throttle page instead of the JSON response that was asked for. `spCore.ts` treats 406 identically to 429/503 — it's absorbed by the shared throttle gate and retried with backoff, not surfaced as a per-item error. If it persists, lower **Concurrent API requests** in Settings.
 

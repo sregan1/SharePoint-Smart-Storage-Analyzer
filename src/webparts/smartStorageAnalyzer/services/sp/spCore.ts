@@ -245,6 +245,31 @@ export class SpApiClient {
   /** True while the shared throttle gate is holding requests back. */
   public get isThrottled(): boolean { return this.throttledUntilMs > Date.now(); }
 
+  /**
+   * Seconds left on the shared throttle gate, 0 when not throttled.
+   *
+   * isThrottled alone reads as "stuck" in the UI; a countdown reads as
+   * "waiting", which is the difference between a bug report and a shrug. SPO
+   * has handed this app Retry-After values up to 44s.
+   */
+  public get throttleRemainingSeconds(): number {
+    return Math.max(0, Math.ceil((this.throttledUntilMs - Date.now()) / 1000));
+  }
+
+  private _requestCount = 0;
+
+  /**
+   * Cumulative HTTP requests issued since this client was created. A $batch
+   * envelope counts as ONE, which is the point — it is the number that says
+   * whether coalescing is actually happening (50 files per request, or 3).
+   *
+   * Exists as a LIVENESS signal. It is the only counter that moves during a
+   * stage with no denominator — a strategy probe, a validation pass, a single
+   * 5,000-row page that takes 40 seconds — so the UI can prove it isn't hung
+   * without pretending to know how much work is left.
+   */
+  public get requestCount(): number { return this._requestCount; }
+
   // 406 IS A THROTTLING SIGNAL — do not "fix" this by treating it as a bad
   // request. When SPO decides to shed load it redirects the call to its HTML
   // throttle page (/_layouts/15/Throttle.htm); we asked for JSON, HTML is not
@@ -472,6 +497,10 @@ export class SpApiClient {
   ): Promise<{ status: number; body: string }[]> {
     await this.waitOutThrottle();
     await this.acquireSlot();
+    // ONE, regardless of how many members ride inside. That is exactly what
+    // makes this counter useful: a batched scan issuing far fewer requests than
+    // it measures files is coalescing correctly.
+    this._requestCount++;
     let resp;
     try {
       // jsonRequest/jsonResponse MUST both be off. The v1 configuration is
@@ -559,6 +588,10 @@ export class SpApiClient {
     // first, then take a slot from the global in-flight ceiling.
     await this.waitOutThrottle();
     await this.acquireSlot();
+    // Counted after the gates, so it reflects requests actually sent, and once
+    // per attempt — a retry IS another request as far as the tenant is
+    // concerned, and hiding that would make the liveness signal lie.
+    this._requestCount++;
     let resp;
     try {
       resp = await this.context.spHttpClient.get(url, SPHttpClient.configurations.v1, {
@@ -589,6 +622,7 @@ export class SpApiClient {
   public async postJson(url: string, body: unknown, attempt = 0): Promise<any> {
     await this.waitOutThrottle();
     await this.acquireSlot();
+    this._requestCount++;
     let resp;
     try {
       resp = await this.context.spHttpClient.post(url, SPHttpClient.configurations.v1, {
@@ -697,7 +731,12 @@ export class SpApiClient {
     signal?: AbortSignal,
     maxPages = 400,
     skipBatch = false,
-    onPage?: (fetchedSoFar: number) => void,
+    // Widened additively to hand back the page that just landed, plus how many
+    // pages have completed. Lets a caller derive its own per-page statistics
+    // (see listItems' file count) from rows it already owns, instead of
+    // re-walking the whole result afterwards. Existing callers ignore the extra
+    // arguments, so this is source-compatible.
+    onPage?: (fetchedSoFar: number, pageRows: any[], pagesDone: number) => void,
     group: BatchGroup = 'default',
   ): Promise<{ items: any[]; truncated: boolean }> {
     const all: any[] = [];
@@ -705,8 +744,9 @@ export class SpApiClient {
     let page = 0;
     for (; next && page < maxPages && !signal?.aborted; page++) {
       const data = await this.getJson(next, skipBatch, group);
-      all.push(...valueArray(data));
-      onPage?.(all.length);
+      const pageRows = valueArray(data);
+      all.push(...pageRows);
+      onPage?.(all.length, pageRows, page + 1);
       next = data?.['odata.nextLink'] ?? data?.['@odata.nextLink'] ?? data?.d?.__next;
     }
     const truncated = !!next && page >= maxPages;
@@ -726,7 +766,7 @@ export class SpApiClient {
     signal?: AbortSignal,
     maxPages = 400,
     skipBatch = false,
-    onPage?: (fetchedSoFar: number) => void,
+    onPage?: (fetchedSoFar: number, pageRows: any[], pagesDone: number) => void,
     group: BatchGroup = 'default',
   ): Promise<any[]> {
     return (await this.getJsonPagedMeta(url, signal, maxPages, skipBatch, onPage, group)).items;

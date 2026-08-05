@@ -144,7 +144,10 @@ export class ExcelExportService {
       // scan actually measured it; totalVersionSizeBytes === 0 is otherwise
       // ambiguous between "no old versions exist" and "wasn't measured".
       ...(summary.versionHistoryIncluded
-        ? ([['Version History Size (additive to Total size)', formatBytes(summary.totalVersionSizeBytes ?? 0)]] as [string, string][])
+        ? ([
+          ['Version History Size (additive to Total size)', formatBytes(summary.totalVersionSizeBytes ?? 0)],
+          ['Version History Count (retained versions, est.)', summary.totalVersionCount ?? 0],
+        ] as [string, string | number][])
         : []),
     ];
 
@@ -153,7 +156,13 @@ export class ExcelExportService {
       const labelCell = ws.getCell(row, 1);
       labelCell.value = label;
       labelCell.font = { bold: true };
-      ws.getCell(row, 2).value = value;
+      const valueCell = ws.getCell(row, 2);
+      valueCell.value = value;
+      // Excel right-aligns numeric cells by default (the counts: Files
+      // scanned, Stale files, Very stale files) while the size/date/duration
+      // strings next to them sit left-aligned — the mismatched ragged edge is
+      // what this overrides. Every value on this sheet reads as one column now.
+      valueCell.alignment = { horizontal: 'left' };
     });
 
     ws.getColumn(1).width = 34;

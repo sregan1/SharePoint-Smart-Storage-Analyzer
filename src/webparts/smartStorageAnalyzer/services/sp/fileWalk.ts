@@ -1,9 +1,10 @@
 import { SpApiClient } from './spCore';
-import { FileEntry, LibraryInfo, ScanOptions } from '../../models/models';
+import { FileEntry, LibraryInfo, ScanOptions, ScanStage } from '../../models/models';
 import { ageInDays, classify } from '../../utils/archivalClassification';
 import { fetchLibraryItems, FlatItem } from './listItems';
 import { fetchRecycleBinItems } from './recycleBin';
-import { applyVersionSizes, probeVersionSizeStrategy } from './versionSizes';
+import { applyVersionSizes, probeVersionSizeStrategy, VersionProgressEvent } from './versionSizes';
+import { getStorageMetrics } from './storageMetrics';
 
 export interface WalkLibraryResult {
   // Set when the library's own bulk query failed and nothing could be read
@@ -24,9 +25,109 @@ export interface WalkLibraryResult {
 
 export type SiteUsers = Map<number, { title: string; loginName: string }>;
 
-// Progress for the version-measuring phase of one library, if it reaches the
-// per-file path. Already throttled at the source (versionSizes.ts).
-export type VersionProgress = (done: number, total: number) => void;
+// An INDEPENDENT check on the version-history total, for one extra request.
+//
+// The folder-level StorageMetrics endpoint reports TotalSize (version-inclusive)
+// and TotalFileStreamSize (current content only) for a library's root folder, so
+// their difference is a library-level version total derived from a completely
+// different SharePoint subsystem than the per-file /Versions sums. If the two
+// disagree wildly, one of them is wrong and the report shouldn't be trusted
+// without a look — which is worth knowing when the figure is large enough to
+// drive a cleanup decision.
+//
+// Diagnostic only, deliberately: it logs and never alters the reported numbers.
+// The per-file measurement is the authoritative source (it is what SharePoint
+// itself charges for), and this has no per-file granularity, so it can
+// corroborate but not correct.
+async function crossCheckVersionTotal(
+  client: SpApiClient,
+  siteUrl: string,
+  library: LibraryInfo,
+  items: FlatItem[],
+  signal: AbortSignal | undefined,
+): Promise<void> {
+  if (signal?.aborted) return;
+  try {
+    const metrics = await getStorageMetrics(client, siteUrl, library.serverRelativeUrl);
+    if (!metrics || metrics.totalFileStreamSizeBytes == null) return;
+    // A stale zero is a documented, common state for this endpoint (see
+    // libraryStats.ts) — it means "not computed yet", not "empty".
+    if (metrics.totalSizeBytes <= 0) return;
+
+    const fromMetrics = metrics.totalSizeBytes - metrics.totalFileStreamSizeBytes;
+    const measuredVersions = items.reduce((sum, i) => sum + (i.isFolder ? 0 : (i.versionSizeBytes ?? 0)), 0);
+    const measuredCurrent = items.reduce((sum, i) => sum + (i.isFolder ? 0 : i.sizeBytes), 0);
+    if (fromMetrics <= 0 && measuredVersions <= 0) return;
+
+    const bigger = Math.max(fromMetrics, measuredVersions);
+    const driftPct = bigger > 0 ? Math.abs(fromMetrics - measuredVersions) / bigger * 100 : 0;
+    const fmt = (n: number): string => `${(n / 1024 / 1024 / 1024).toFixed(1)} GB`;
+    // Every raw input, not just the derived gap.
+    //
+    // The first run of this check reported "27% apart" and that was not enough to
+    // act on: it could not distinguish "our per-file sum is wrong" from
+    // "TotalSize is lagging", because the two operands were already collapsed
+    // into one number. Printing all four lets the arithmetic be checked by hand:
+    // TotalFileStreamSize should land on our own current-content sum (which
+    // corroborates the field's meaning), and TotalSize should land on
+    // current + versions. Whichever of those two fails is the one to distrust.
+    const detail =
+      `StorageMetrics TotalSize ${fmt(metrics.totalSizeBytes)}, `
+      + `TotalFileStreamSize ${fmt(metrics.totalFileStreamSizeBytes)} `
+      + `⇒ versions ${fmt(fromMetrics)}. `
+      + `Measured: current ${fmt(measuredCurrent)}, versions ${fmt(measuredVersions)} `
+      + `⇒ expected TotalSize ${fmt(measuredCurrent + measuredVersions)}.`;
+
+    // 25%: loose on purpose. Both sides are legitimately imprecise — the metrics
+    // job lags, and TotalSize may include metadata overhead and possibly the
+    // first-stage recycle bin. This is looking for an order-of-magnitude
+    // disagreement, not an accounting reconciliation.
+    if (driftPct > 25) {
+      // eslint-disable-next-line no-console
+      console.warn(
+        `[SmartStorageAnalyzer] ${library.title}: version-history cross-check DISAGREES ` +
+        `(${driftPct.toFixed(0)}% apart). ${detail} The per-file figure is the authoritative one ` +
+        '(/Versions is what SharePoint charges for) and StorageMetrics is maintained by a lagging ' +
+        'background job, so a low TotalSize is the more likely explanation — but verify against ' +
+        'Site Settings → Storage Metrics before acting on the number.',
+      );
+    } else {
+      // eslint-disable-next-line no-console
+      console.info(
+        `[SmartStorageAnalyzer] ${library.title}: version-history cross-check agrees ` +
+        `(${driftPct.toFixed(0)}% apart). ${detail}`,
+      );
+    }
+  } catch {
+    // Best-effort corroboration. Never let it affect a scan that otherwise
+    // succeeded.
+  }
+}
+
+// One progress update from anywhere inside a library's scan.
+//
+// Replaces two separate callbacks with two different units (items read, files
+// measured). That split is why the version stages had nowhere to report from:
+// there was no callback carrying a stage, so probing, bulk sweeping and
+// validating — up to ~37 heavyweight requests — were structurally invisible.
+export interface WalkStageProgress {
+  stage: Exclude<ScanStage, 'discovering'>;
+  stageLabel: string;
+  detail?: string;
+  done?: number;
+  total?: number;
+  unit?: 'items' | 'pages' | 'files';
+  // Appended to the scan-level stage key so the view restarts its rate window
+  // when this library moves to a genuinely different kind of work.
+  stageKeySuffix: string;
+  // Cumulative WITHIN THIS LIBRARY, carried on every emit from every stage so a
+  // stage transition never momentarily zeroes a counter on screen.
+  itemsRead: number;
+  filesSeen: number;
+  skippedVersions: number;
+  unmeasuredVersions: number;
+}
+export type WalkProgress = (p: WalkStageProgress) => void;
 
 // Enumerates one library for the Storage Report.
 //
@@ -60,8 +161,7 @@ export async function walkLibrary(
   options: ScanOptions,
   users: SiteUsers,
   onEntry: (entry: FileEntry) => void,
-  onProgress?: (fetchedSoFar: number) => void,
-  onVersionProgress?: VersionProgress,
+  onProgress?: WalkProgress,
 ): Promise<WalkLibraryResult> {
   let items: FlatItem[];
   let skippedVersions = 0;
@@ -70,12 +170,46 @@ export async function walkLibrary(
   // Set by listItems.ts when the reduced field set won, i.e. these rows carry
   // no inline version size.
   let versionFieldUnavailable = false;
+  // Running library-level counters, so every emit from every stage carries them.
+  let itemsRead = 0;
+  let filesSeen = 0;
+  const emit = (p: Omit<WalkStageProgress, 'itemsRead' | 'filesSeen' | 'skippedVersions' | 'unmeasuredVersions'>): void =>
+    onProgress?.({ ...p, itemsRead, filesSeen, skippedVersions, unmeasuredVersions });
+
   try {
     items = library.isRecycleBin
-      ? await fetchRecycleBinItems(client, siteUrl, { signal: options.signal, onProgress })
+      // Recycle Bin rows are all files and have no page denominator of their
+      // own, so its sweep reports items only.
+      ? await fetchRecycleBinItems(client, siteUrl, {
+        signal: options.signal,
+        onProgress: (fetchedSoFar) => {
+          itemsRead = fetchedSoFar;
+          filesSeen = fetchedSoFar;
+          emit({
+            stage: 'items',
+            stageLabel: 'Reading deleted items',
+            detail: `${fetchedSoFar.toLocaleString()} items read`,
+            stageKeySuffix: 'items',
+          });
+        },
+      })
       : await fetchLibraryItems(client, siteUrl, library, {
         signal: options.signal,
-        onProgress,
+        onProgress: (p) => {
+          itemsRead = p.items;
+          filesSeen = p.files;
+          emit({
+            stage: 'items',
+            stageLabel: 'Reading items',
+            detail: p.pagesTotal
+              ? `page ${p.pagesDone} of ${p.pagesTotal} · ${p.items.toLocaleString()} items`
+              : `${p.items.toLocaleString()} items read`,
+            done: p.pagesDone,
+            total: p.pagesTotal,
+            unit: 'pages',
+            stageKeySuffix: 'items',
+          });
+        },
         onVersionFieldUnavailable: () => { versionFieldUnavailable = true; },
       });
   } catch (err: any) {
@@ -108,17 +242,43 @@ export async function walkLibrary(
         '— sizes exclude retained versions for this library.',
       );
     } else {
-      const strategy = await probeVersionSizeStrategy(client, siteUrl, library, options.signal);
-      const fill = await applyVersionSizes(client, siteUrl, library, items, {
+      // Every version stage funnels its own progress through here, translated
+      // into the scan's vocabulary. The stage names map 1:1, so a new version
+      // stage cannot appear without a home in the status line.
+      const versionOptions = {
         signal: options.signal,
-        mode: options.versionScanMode ?? 'quick',
-        onProgress: onVersionProgress,
+        onProgress: (e: VersionProgressEvent) => {
+          const stage: Exclude<ScanStage, 'discovering'> = e.stage === 'probe'
+            ? 'version-probe'
+            : e.stage === 'bulk-sweep'
+              ? 'version-bulk'
+              : e.stage === 'validate' ? 'version-validate' : 'version-per-file';
+          emit({
+            stage,
+            stageLabel: e.stage === 'per-file'
+              ? 'Measuring version history'
+              : e.stage === 'bulk-sweep'
+                ? 'Reading version history'
+                : e.stage === 'validate' ? 'Checking version history' : 'Checking how version history can be read',
+            detail: e.detail,
+            done: e.done,
+            total: e.total,
+            unit: e.unit,
+            // The target count is part of the key: a per-file pass restarting
+            // for a different library is a different rate window, and so is a
+            // bulk sweep giving way to a per-file fallback.
+            stageKeySuffix: `${e.stage}:${e.total ?? 0}`,
+          });
+        },
         onSkipped: () => { skippedVersions++; },
-      }, strategy);
+      };
+      const strategy = await probeVersionSizeStrategy(client, siteUrl, library, items, versionOptions);
+      const fill = await applyVersionSizes(client, siteUrl, library, items, versionOptions, strategy);
       versionStrategy = fill.strategy;
       // skippedVersions is already accumulated via onSkipped, so only the
       // never-attempted count is taken from the result here.
       unmeasuredVersions += fill.unmeasured;
+      await crossCheckVersionTotal(client, siteUrl, library, items, options.signal);
     }
   }
 

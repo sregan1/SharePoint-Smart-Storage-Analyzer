@@ -37,6 +37,19 @@ export class StorageAnalyzerService {
    */
   get isThrottled(): boolean { return this.client.isThrottled; }
 
+  /**
+   * Seconds left on that wait. "Paused, 44s to go" is a materially different
+   * message from "paused" — the first is information, the second still looks
+   * like a hang.
+   */
+  get throttleRemainingSeconds(): number { return this.client.throttleRemainingSeconds; }
+
+  /**
+   * Cumulative requests issued. Views show this as a liveness signal during
+   * stages that have no denominator to draw a progress bar against.
+   */
+  get requestCount(): number { return this.client.requestCount; }
+
   // ── Site / permission checks ──────────────────────────────────────────────
 
   checkCanManageWeb(siteUrl: string): Promise<boolean> {

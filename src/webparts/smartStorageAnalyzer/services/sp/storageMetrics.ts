@@ -24,6 +24,17 @@ interface RawMetrics {
   totalSizeBytes: number;
   fileCount: number;
   lastModified?: string;
+  // TotalSize and TotalFileStreamSize are DIFFERENT numbers, and the difference
+  // is the interesting part: TotalSize is version-inclusive, TotalFileStreamSize
+  // is current content only. So (totalSizeBytes - totalFileStreamSizeBytes) is a
+  // library-level version-history total for a single request.
+  //
+  // Reported separately rather than collapsed into totalSizeBytes (which keeps
+  // its existing `TotalSize ?? TotalFileStreamSize` fallback for every existing
+  // consumer, so nothing else changes). Used only as an independent CROSS-CHECK
+  // of the per-file figure — it has no per-file granularity, so it cannot
+  // replace the measurement, only corroborate it.
+  totalFileStreamSizeBytes?: number;
 }
 
 // Fired while a library sweep is in progress, with the running item count.
@@ -99,7 +110,12 @@ export async function getLibraryAggregate(
     })
     : await fetchLibraryItems(client, siteUrl, library, {
       signal: options?.signal,
-      onProgress: options?.onWalkProgress,
+      // The Explorer only ever wanted a raw item count, so it adapts the richer
+      // sweep progress down to that. Deliberately NOT passing
+      // onVersionFieldUnavailable: that is what would opt this path into the
+      // version escalation, and a folder drill-down must keep costing exactly
+      // what it costs today.
+      onProgress: (p) => options?.onWalkProgress?.(p.items),
     });
   const partial = !!options?.signal?.aborted;
   const entry: CachedAggregate = {
@@ -148,8 +164,13 @@ export async function getStorageMetrics(
     const m = data?.d ?? data;
     const totalSizeBytes = Number(m?.TotalSize ?? m?.TotalFileStreamSize);
     if (!isFinite(totalSizeBytes)) return undefined;
+    const streamOnly = Number(m?.TotalFileStreamSize);
     return {
       totalSizeBytes,
+      // Only when it's genuinely a separate, usable number. If the endpoint only
+      // returned one of the two, the difference would be 0 and would look like
+      // "this library has no version history" rather than "not available".
+      totalFileStreamSizeBytes: isFinite(streamOnly) && m?.TotalSize != null ? streamOnly : undefined,
       fileCount: Number(m?.TotalFileCount ?? 0),
       lastModified: m?.LastModified as string | undefined,
     };
