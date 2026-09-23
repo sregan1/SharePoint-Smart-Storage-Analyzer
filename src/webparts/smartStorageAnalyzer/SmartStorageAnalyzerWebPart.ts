@@ -1,7 +1,7 @@
 import { Version } from '@microsoft/sp-core-library';
-import type { IPropertyPaneConfiguration } from '@microsoft/sp-property-pane';
+import { IPropertyPaneConfiguration, PropertyPaneDropdown } from '@microsoft/sp-property-pane';
 import { BaseClientSideWebPart } from '@microsoft/sp-webpart-base';
-import { ThemeProvider, IReadonlyTheme } from '@microsoft/sp-component-base';
+import type { IReadonlyTheme } from '@microsoft/sp-component-base';
 import * as React from 'react';
 import * as ReactDom from 'react-dom';
 
@@ -40,43 +40,44 @@ export default class SmartStorageAnalyzerWebPart extends BaseClientSideWebPart<I
     light: '#c7e0f4',
     lighter: '#deecf9',
   };
+  // True for an inverted (dark) section or theme variant.
+  private _isDark = false;
+  private _ready = false;
 
-  protected onInit(): Promise<void> {
-    // Initialize services first so this._sp is defined before any render() call.
+  protected async onInit(): Promise<void> {
+    await super.onInit();
     try {
       this._sp = new StorageAnalyzerService(this.context);
       this._excel = new ExcelExportService();
     } catch (err: any) {
-      return Promise.reject(
-        new Error(`[SmartStorageAnalyzer] Service init failed: ${err?.message ?? String(err)}\n${err?.stack ?? ''}`)
-      );
+      throw new Error(`[SmartStorageAnalyzer] Service init failed: ${err?.message ?? String(err)}\n${err?.stack ?? ''}`);
     }
+    this._ready = true;
+  }
 
-    // Read the current SharePoint site theme color and re-render when it changes.
-    try {
-      const themeProvider = this.context.serviceScope.consume(ThemeProvider.serviceKey);
-      const applyTheme = (theme: IReadonlyTheme | undefined): void => {
-        const p = theme?.palette;
-        if (p?.themePrimary) {
-          this._brandColors = {
-            primary: p.themePrimary,
-            darkAlt: p.themeDarkAlt ?? p.themePrimary,
-            dark: p.themeDark ?? p.themePrimary,
-            darker: p.themeDarker ?? p.themeDark ?? p.themePrimary,
-            light: p.themeLight ?? '#c7e0f4',
-            lighter: p.themeLighter ?? '#deecf9',
-          };
-        }
-        this.render();
+  // SPFx calls this before onInit (supportsThemeVariants is on), and again on
+  // every section/variant change. Store the theme and only repaint once
+  // initialized — rendering earlier reads this.properties before it exists and
+  // aborts the load with an opaque "[object Object]".
+  protected onThemeChanged(theme: IReadonlyTheme | undefined): void {
+    const p = theme?.palette;
+    if (p?.themePrimary) {
+      this._brandColors = {
+        primary: p.themePrimary,
+        darkAlt: p.themeDarkAlt ?? p.themePrimary,
+        dark: p.themeDark ?? p.themePrimary,
+        darker: p.themeDarker ?? p.themeDark ?? p.themePrimary,
+        light: p.themeLight ?? '#c7e0f4',
+        lighter: p.themeLighter ?? '#deecf9',
       };
-      applyTheme(themeProvider.tryGetTheme());
-      themeProvider.themeChangedEvent.add(this, (args) => applyTheme(args.theme));
-    } catch { /* theme unavailable — keep default blue */ }
-
-    return super.onInit();
+    }
+    this._isDark = !!theme?.isInverted;
+    if (!this._ready) return;
+    this.render();
   }
 
   public render(): void {
+    if (!this._sp) return;
     try {
       const element = React.createElement(App, {
         context: this.context,
@@ -84,6 +85,7 @@ export default class SmartStorageAnalyzerWebPart extends BaseClientSideWebPart<I
         excel: this._excel,
         defaultView: resolveDefaultView(this.properties.defaultView),
         brandColors: this._brandColors,
+        isDark: this._isDark,
       });
       ReactDom.render(element, this.domElement);
     } catch (err: any) {
@@ -113,30 +115,23 @@ export default class SmartStorageAnalyzerWebPart extends BaseClientSideWebPart<I
   }
 
   protected getPropertyPaneConfiguration(): IPropertyPaneConfiguration {
-    // Construct the dropdown field descriptor directly to avoid any runtime
-    // import of @microsoft/sp-property-pane (which is an AMD external and
-    // cannot be require()'d dynamically in the workbench without a CSP error).
-    // PropertyPaneFieldType.Dropdown = 6 (stable since SPFx 1.x).
-    const dropdownField: any = {
-      type: 6,
-      targetProperty: 'defaultView',
-      properties: {
-        label: 'Default view on open',
-        options: [
-          { key: 'home', text: 'Home' },
-          { key: 'tree', text: 'Tree View' },
-          { key: 'list', text: 'List View' },
-          { key: 'report', text: 'Storage Report' },
-        ],
-        selectedKey: resolveDefaultView(this.properties.defaultView),
-      },
-    };
     return {
       pages: [{
         header: { description: 'Smart Storage Analyzer configuration' },
         groups: [{
           groupName: 'General',
-          groupFields: [dropdownField],
+          groupFields: [
+            PropertyPaneDropdown('defaultView', {
+              label: 'Default view on open',
+              options: [
+                { key: 'home', text: 'Home' },
+                { key: 'tree', text: 'Tree View' },
+                { key: 'list', text: 'List View' },
+                { key: 'report', text: 'Storage Report' },
+              ],
+              selectedKey: resolveDefaultView(this.properties.defaultView),
+            }),
+          ],
         }],
       }],
     };

@@ -1,4 +1,4 @@
-import { SpApiClient, valueArray, odata, SMALL_BATCH_SIZE } from './spCore';
+import { SpApiClient, valueArray, odata, SMALL_BATCH_SIZE, abortError } from './spCore';
 import { LibraryInfo } from '../../models/models';
 import { FlatItem, ITEMS_PAGE_SIZE } from './listItems';
 
@@ -8,7 +8,7 @@ import { FlatItem, ITEMS_PAGE_SIZE } from './listItems';
 // the main item sweep and version size costs nothing at all. This module is
 // everything that happens when that field is rejected.
 //
-// WHAT IS ACTUALLY TRUE ON A REAL TENANT (measured, not theorised — an earlier
+// WHAT IS ACTUALLY TRUE ON A REAL TENANT (measured, not theorized — an earlier
 // version of this comment asserted a theory that turned out to be wrong, and
 // that wrong theory shaped the code for several rounds):
 //   - `$select=…,SMTotalFileStreamSize` 400s with "The field or property
@@ -264,10 +264,14 @@ export async function probeVersionSizeStrategy(
 
   const sample = pickProbeSample(items, RLDAS_PROBE_ROWS);
   // No file in the library can have retained versions, so there is nothing to
-  // measure and nothing any mechanism could prove. Take the free answer.
+  // measure and nothing any mechanism could prove. Take the free answer:
+  // 'inline' is the no-op strategy — every provably-zero file already carries
+  // an exact 0 from the main sweep. (This returned 'items-side-channel', which
+  // ran a full bulk sweep for nothing, and on lists that reject that field the
+  // failure path then reported the library as unmeasured.)
   if (sample.length === 0) {
     return {
-      kind: 'items-side-channel',
+      kind: 'inline',
       reason: 'no file in this library has retained versions',
     };
   }
@@ -286,7 +290,7 @@ export async function probeVersionSizeStrategy(
   try {
     const url = `${siteUrl}/_api/web/lists(guid'${library.id}')/items`
       + `?$select=${SIDE_CHANNEL_FIELDS}&$top=1`;
-    const rows = valueArray(await client.getJson(url, true));
+    const rows = valueArray(await client.getJson(url, true, 'default', options.signal));
     // Presence, not truthiness: a genuinely zero-version file legitimately
     // reports 0, and `0` must not be read as "field missing".
     if (rows.length > 0 && 'SMTotalFileStreamSize' in rows[0] && rows[0].SMTotalFileStreamSize != null) {
@@ -616,10 +620,20 @@ async function fillFromRenderListData(
         total: pagesHint != null && page < pagesHint ? pagesHint : undefined,
         unit: 'pages',
       });
-      const data = await client.postJson(
-        rldasUrl(siteUrl, library.id!, nextHref),
-        rldasBody(ITEMS_PAGE_SIZE),
-      );
+      let data: any;
+      try {
+        data = await client.postJson(
+          rldasUrl(siteUrl, library.id!, nextHref),
+          rldasBody(ITEMS_PAGE_SIZE),
+          0,
+          options.signal,
+        );
+      } catch (err) {
+        // Canceled mid-wait: keep the pages already read, same as a cancel
+        // between pages, rather than reporting the whole library as 'none'.
+        if (options.signal?.aborted) break;
+        throw err;
+      }
       const rows: any[] = Array.isArray(data?.Row) ? data.Row : [];
       rowsSoFar += rows.length;
       for (const row of rows) {
@@ -706,6 +720,9 @@ async function fetchVersionInfo(
   // cutting round trips by 60% on exactly the libraries that need thousands of
   // them (see BATCH_MAX_SMALL in spCore.ts).
   const versions = await client.getJsonPaged(url, signal, 400, false, undefined, 'small');
+  // getJsonPaged keeps whatever pages arrived when canceled, which for a
+  // version list would be recorded as a confident (and too small) total.
+  if (signal?.aborted) throw abortError();
   return {
     sizeBytes: versions.reduce((sum, v) => sum + num(v.Size), 0),
     count: versions.length,
@@ -811,6 +828,9 @@ async function fillPerFile(
         // which can overstate on a library with a version-retention limit.
         file.versionCountApprox = info.count;
       } catch {
+        // Canceled, not failed: leave it for the unmeasured count below
+        // rather than reporting a lookup failure that retrying would fix.
+        if (options.signal?.aborted) return;
         skipped++;
         options.onSkipped?.();
       }

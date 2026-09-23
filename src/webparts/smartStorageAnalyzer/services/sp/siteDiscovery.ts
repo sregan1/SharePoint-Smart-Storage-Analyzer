@@ -65,21 +65,27 @@ export interface SubwebInfo {
 // endpoint. Silently skips a branch on 403 (no access to that subweb) rather
 // than failing the whole scan — matches how SharePoint itself hides subsites
 // the current user cannot see.
+//
+// Sibling branches are walked in parallel (the client's global request
+// governor still bounds what's in flight, and small requests batch together);
+// walking them one at a time made discovery a long serial chain on a site with
+// many subsites. Results keep the same depth-first order as before.
 export async function getSubwebsRecursive(client: SpApiClient, siteUrl: string): Promise<SubwebInfo[]> {
-  const result: SubwebInfo[] = [];
-  async function walk(webUrl: string): Promise<void> {
+  async function walk(webUrl: string): Promise<SubwebInfo[]> {
     let children: any[];
     try {
       const data = await client.getJson(`${webUrl}/_api/web/webs?$select=Title,Url&$top=500`);
       children = valueArray(data);
     } catch {
-      return; // no access — skip silently
+      return []; // no access — skip silently
     }
-    for (const child of children) {
-      result.push({ title: child.Title, url: child.Url });
-      await walk(child.Url);
-    }
+    const nested = await Promise.all(children.map((child) => walk(child.Url)));
+    const out: SubwebInfo[] = [];
+    children.forEach((child, i) => {
+      out.push({ title: child.Title, url: child.Url });
+      out.push(...nested[i]);
+    });
+    return out;
   }
-  await walk(siteUrl);
-  return result;
+  return walk(siteUrl);
 }

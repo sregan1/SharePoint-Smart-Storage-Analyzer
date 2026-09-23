@@ -14,7 +14,7 @@ A free, open-source SPFx web part that helps SharePoint site owners find storage
 
 ### Home
 
-The web part opens on a landing screen with three cards — **Tree View**, **List View**, and **Storage Report** — each with a short description of what it does. A site administrator can instead configure the web part to open directly on any one of the three; see [Configuration](#configuration).
+The web part opens on a landing screen with three cards — **Tree View**, **List View**, and **Storage Report** — each with a short description of what it does. A site administrator can instead configure the web part to open directly on any one of the three; see [Configuration](#configuration). The web part follows the page's light or dark theme, and a rendering error in one screen shows a recovery message with a "Back to Home" button instead of breaking the whole web part.
 
 ![Home screen with Tree View, List View, and Storage Report cards](docs/screenshots/00_home.png)
 
@@ -32,9 +32,9 @@ Two entry points into the same screen — a WizTree-style treemap of every docum
 | **Library switcher** | A button row switches between every document library on the site without leaving the view; a **Recycle Bin** entry shows the site's first-stage recycle bin (not the site collection recycle bin) |
 | **Refresh** | Clears cached folder/library sizes for the current site and re-measures what's on screen, for when content has changed since the last load |
 | **Breadcrumb navigation** | Jump back to any ancestor folder in one click |
-| **List View** | Toggle to a sortable table of the same folder's contents — folders and files together, largest first by default |
-| **Version History Size & count** | Optional per-folder toggle that adds each file's retained-version storage (and how many old versions are retained) on top of its Current File Size — sized into the Treemap's file squares (as Total Storage Size) and shown as its own columns in the List View. Folder totals never include it (no recursive rollup exists for it) |
-| **Excel / CSV export** | Export the current List View (name, Current File Size, item count, modified date, archival status, Version History Size and count if enabled) to `.xlsx` or `.csv`; filenames are prefixed with the site name |
+| **List View** | Toggle to a sortable table of the same folder's contents — folders and files together, largest first by default, 200 rows per page |
+| **Version History Size & count** | Off by default (it's extra measurement work), shared with the Storage Report, and remembered across sessions. Adds each file's retained-version storage (and how many old versions are retained) on top of its Current File Size — sized into the Treemap's file squares, and shown in the List View as **Total Storage Size**, **Version History Size**, and **Version Count** columns. Folder totals never include it (no recursive rollup exists for it) |
+| **Excel / CSV export** | Export the current List View (name, Total Storage Size, Current File Size, item count, Version History Size and count, modified date, archival status — version columns only when enabled) to `.xlsx` or `.csv`, in the same column order as the table; filenames are prefixed with the site name |
 | **Archival status** | Files are tagged Active / Stale / Very stale based on configurable last-modified thresholds, shown in both the treemap and the list |
 
 Both view modes share the same drill-down state — switching from Treemap to List (or vice versa) keeps you in the same folder.
@@ -45,20 +45,20 @@ Both view modes share the same drill-down state — switching from Treemap to Li
 
 Scan a site — and optionally its subsites — and export a report of archival candidates.
 
-![Storage Report results showing summary tiles for current file size, files scanned, and stale/very-stale counts, plus a sortable file-level results table](docs/screenshots/05_report_results.png)
+![Storage Report results showing summary tiles for Total Storage Size, Current File Size, and Version History Size, then files scanned and stale/very-stale counts, plus a sortable file-level results table](docs/screenshots/05_report_results.png)
 
 | Feature | Description |
 |---|---|
 | **Configurable scope** | Include subsites and hidden/system libraries in the scan |
 | **Concurrent, throttling-aware scan** | Adjustable request concurrency with a stage-by-stage progress display (what's being read, a per-stage count, an ETA once there's enough data to estimate from) and an explicit "paused, waiting on SharePoint" state instead of an apparent freeze |
 | **Cancelable scans** | Stop a running scan and still see the partial results collected so far (not saved to history) |
-| **Version History Size & count** | Optional toggle that adds per-file Version History Size and count columns, plus summary tiles for the total Version History Size and total retained-version count across the scan — additive to Current File Size, not included in it (the two combined are the Total Storage Size). Free on most libraries (it rides the same bulk read); on a list that won't report it in bulk, only files that can actually have retained versions are measured individually |
+| **Version History Size & count** | Off by default (the same shared, remembered setting as Tree/List View). Adds per-file Version History Size and count columns, plus summary tiles for **Total Storage Size** (shown first), Current File Size, and Version History Size with the total retained-version count — Version History Size is additive to Current File Size, not included in it, and a total marked "≥" means some files couldn't be measured. Free on most libraries (it rides the same bulk read); on a list that won't report it in bulk, only files that can actually have retained versions are measured individually |
 | **Partial-scan reporting** | Folders/subsites that fail to read (permissions, throttling), and files whose version history specifically couldn't be read, are called out with a warning, expandable per-item error details, and a copy-to-clipboard action, instead of silently under-reporting |
 | **Archival tiering** | Every file is classified Active, Stale, or Very stale based on configurable last-modified thresholds |
 | **In-browser results table** | Sortable results with a toggle to show only archival candidates |
 | **Excel export** | Color-coded `.xlsx` workbook with a Summary sheet and a full file-level Details sheet; filename prefixed with the site name |
 | **CSV export** | Plain-text alternative for scripted processing; filename prefixed with the site name |
-| **Scan history** | Past scans persist in IndexedDB (10 most recent), with a cross-site visibility toggle. Every saved report keeps its complete file listing — there's no row cap; if browser storage genuinely runs out of room, the *oldest* report's listing (never its summary) is evicted to make room, flagged with a "No file list" badge |
+| **Scan history** | Past scans persist in IndexedDB (10 most recent, listings stored in chunks so even a very large report doesn't have to be written or read as one piece), with a cross-site visibility toggle. Every saved report keeps its complete file listing — there's no row cap; if browser storage genuinely runs out of room, the *oldest* report's listing (never its summary) is evicted to make room, flagged with a "No file list" badge. Deleting a saved scan asks for confirmation first |
 | **Report compare** | Diff two saved scans to see size change, new archival candidates, and resolved items over time — with a warning if the two scans are from different sites |
 
 ---

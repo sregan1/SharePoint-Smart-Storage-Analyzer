@@ -16,9 +16,28 @@ const MAX_REPORTS = 10;
 
 // One report's file listing, stored on its own so it can be read — or evicted —
 // independently of the metadata that the history list needs.
+//
+// Written in chunks of CHUNK_SIZE entries, keyed "<reportId>#<chunk>", all in
+// one transaction (so a failed save still leaves nothing half-written). A single
+// record holding a 190,000-row listing had to be structured-cloned in one piece,
+// which could run the tab out of memory and surface as a misleading storage
+// error. Listings saved before chunking are one record keyed by the bare report
+// id; reads still accept that shape, so no database upgrade is needed.
 interface StoredEntries {
   id: string;
   entries: FileEntry[];
+}
+const CHUNK_SIZE = 20000;
+
+function chunkKey(reportId: string, index: number): string {
+  // Zero-padded so the keys sort in chunk order.
+  const n = String(index);
+  return `${reportId}#${'000000'.substring(n.length)}${n}`;
+}
+
+// Every chunk key of one report, excluding the legacy single-record key.
+function chunkRange(reportId: string): IDBKeyRange {
+  return IDBKeyRange.bound(`${reportId}#`, `${reportId}#￿`);
 }
 
 export class ReportHistoryService {
@@ -105,16 +124,30 @@ export class ReportHistoryService {
         await this.writeEntries(db, { id: report.id, entries: report.entries });
         return { listingSaved: true, quotaExceeded: false };
       } catch (err: any) {
-        // Out of space. Free the OLDEST listings — their summaries stay, so the
-        // history list and diffing are unaffected — and try once more.
-        if (!isQuotaError(err)) throw err;
-        const freed = await this.evictOldestListings(db, report.id);
-        if (freed > 0) {
+        // Out of space. Free the OLDEST listings one at a time — their
+        // summaries stay, so the history list and diffing are unaffected —
+        // retrying after each, until the write fits or nothing is left to
+        // free. (This used to free one listing, retry once, then give up even
+        // when freeing a second would have made room.)
+        if (!await isLikelyQuotaError(err)) {
+          // Not a space problem (e.g. too large to serialize in one piece), so
+          // freeing older listings wouldn't help. The summary is saved; mark
+          // the listing as unavailable so View says so instead of failing.
+          await this.writeMeta(db, { ...meta, listingEvicted: true });
+          return { listingSaved: false, quotaExceeded: false };
+        }
+        for (;;) {
+          const freed = await this.evictOldestListing(db, report.id);
+          if (!freed) break;
           try {
             await this.writeEntries(db, { id: report.id, entries: report.entries });
             return { listingSaved: true, quotaExceeded: false };
           } catch (retryErr: any) {
-            if (!isQuotaError(retryErr)) throw retryErr;
+            if (!await isLikelyQuotaError(retryErr)) {
+              // Space was no longer the problem; report it as such.
+              await this.writeMeta(db, { ...meta, listingEvicted: true });
+              return { listingSaved: false, quotaExceeded: false };
+            }
           }
         }
         // Still no room. The summary is already saved; record that this report
@@ -136,7 +169,7 @@ export class ReportHistoryService {
       const entries = tx.objectStore(ENTRIES_STORE);
       for (const id of excessIds) {
         store.delete(id);
-        entries.delete(id);
+        deleteListing(entries, id);
       }
       store.put(meta);
     });
@@ -144,7 +177,12 @@ export class ReportHistoryService {
 
   private async writeEntries(db: IDBDatabase, payload: StoredEntries): Promise<void> {
     return runTx(db, [ENTRIES_STORE], 'readwrite', (tx) => {
-      tx.objectStore(ENTRIES_STORE).put(payload);
+      const store = tx.objectStore(ENTRIES_STORE);
+      // Replacing, not appending: clear any earlier copy in either shape.
+      deleteListing(store, payload.id);
+      for (let i = 0, chunk = 0; i < payload.entries.length || chunk === 0; i += CHUNK_SIZE, chunk++) {
+        store.put({ id: chunkKey(payload.id, chunk), entries: payload.entries.slice(i, i + CHUNK_SIZE) });
+      }
     });
   }
 
@@ -160,26 +198,21 @@ export class ReportHistoryService {
     return existing.slice(existing.length - overBy).map((r) => r.id);
   }
 
-  // Deletes stored listings oldest-first, keeping their metadata, and returns
-  // how many were freed. `exceptId` is the report currently being saved.
-  private async evictOldestListings(db: IDBDatabase, exceptId: string): Promise<number> {
+  // Deletes the single oldest stored listing, keeping its metadata. Returns
+  // false when there is nothing left to free. One at a time: the next write
+  // attempt may well succeed now, and discarding more history than necessary
+  // is not recoverable. `exceptId` is the report currently being saved.
+  private async evictOldestListing(db: IDBDatabase, exceptId: string): Promise<boolean> {
     const all = await this.getAll(db);
-    // Oldest first, and only those that still have a listing to free.
-    const candidates = all
-      .filter((r) => r.id !== exceptId && !r.listingEvicted && r.entryCount > 0)
-      .reverse();
-    let freed = 0;
-    for (const victim of candidates) {
-      await runTx(db, [META_STORE, ENTRIES_STORE], 'readwrite', (tx) => {
-        tx.objectStore(ENTRIES_STORE).delete(victim.id);
-        tx.objectStore(META_STORE).put({ ...victim, listingEvicted: true });
-      });
-      freed++;
-      // One at a time: the next write attempt may well succeed now, and
-      // discarding more history than necessary is not recoverable.
-      break;
-    }
-    return freed;
+    // getAll is newest-first; the last candidate is the oldest.
+    const candidates = all.filter((r) => r.id !== exceptId && !r.listingEvicted && r.entryCount > 0);
+    const victim = candidates[candidates.length - 1];
+    if (!victim) return false;
+    await runTx(db, [META_STORE, ENTRIES_STORE], 'readwrite', (tx) => {
+      deleteListing(tx.objectStore(ENTRIES_STORE), victim.id);
+      tx.objectStore(META_STORE).put({ ...victim, listingEvicted: true });
+    });
+    return true;
   }
 
   /** Report summaries, newest first. Never loads a file listing. */
@@ -207,12 +240,26 @@ export class ReportHistoryService {
     try {
       return await new Promise<FileEntry[] | null>((resolve, reject) => {
         const tx = db.transaction(ENTRIES_STORE, 'readonly');
-        const req = tx.objectStore(ENTRIES_STORE).get(id);
-        req.onsuccess = () => {
-          const rec = req.result as StoredEntries | undefined;
-          resolve(rec?.entries ?? null);
+        const store = tx.objectStore(ENTRIES_STORE);
+        // Chunked listing first; fall back to a pre-chunking single record.
+        const chunksReq = store.getAll(chunkRange(id));
+        chunksReq.onsuccess = () => {
+          const chunks = chunksReq.result as StoredEntries[];
+          if (chunks.length > 0) {
+            // getAll returns records in key order, which is chunk order.
+            const all: FileEntry[] = [];
+            for (const c of chunks) for (const e of c.entries) all.push(e);
+            resolve(all);
+            return;
+          }
+          const legacyReq = store.get(id);
+          legacyReq.onsuccess = () => {
+            const rec = legacyReq.result as StoredEntries | undefined;
+            resolve(rec?.entries ?? null);
+          };
+          legacyReq.onerror = () => reject(legacyReq.error);
         };
-        req.onerror = () => reject(req.error);
+        chunksReq.onerror = () => reject(chunksReq.error);
       });
     } finally {
       db.close();
@@ -224,12 +271,19 @@ export class ReportHistoryService {
     try {
       await runTx(db, [META_STORE, ENTRIES_STORE], 'readwrite', (tx) => {
         tx.objectStore(META_STORE).delete(id);
-        tx.objectStore(ENTRIES_STORE).delete(id);
+        deleteListing(tx.objectStore(ENTRIES_STORE), id);
       });
     } finally {
       db.close();
     }
   }
+}
+
+// Removes a report's listing in both shapes: its chunks and any legacy
+// single record.
+function deleteListing(store: IDBObjectStore, reportId: string): void {
+  store.delete(reportId);
+  store.delete(chunkRange(reportId));
 }
 
 // Runs a transaction and settles on its outcome.
@@ -281,4 +335,22 @@ function isQuotaError(err: any): boolean {
     || name === 'NS_ERROR_DOM_QUOTA_REACHED'
     || name === 'AbortError'
     || name === 'UnknownError';
+}
+
+// isQuotaError plus a sanity check for the ambiguous names. Chromium also
+// reports an out-of-memory failure serializing one huge record as
+// UnknownError; treating that as "disk full" deleted older reports' listings
+// for nothing. When the browser says most of the quota is still free, it
+// isn't a quota problem.
+async function isLikelyQuotaError(err: any): Promise<boolean> {
+  if (!isQuotaError(err)) return false;
+  const name = String(err?.name ?? '');
+  if (name === 'QuotaExceededError' || name === 'NS_ERROR_DOM_QUOTA_REACHED') return true;
+  try {
+    const est = await navigator.storage?.estimate?.();
+    if (est?.quota && est.usage != null && est.usage < est.quota * 0.5) return false;
+  } catch {
+    // No estimate available — keep the original, cautious classification.
+  }
+  return true;
 }

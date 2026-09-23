@@ -140,14 +140,19 @@ export async function scanSite(
     0,
   );
 
+  // Author/Editor names, resolved once for the whole scan. The bulk item sweep
+  // returns numeric lookup ids rather than expanded user objects, because
+  // $expand=Author on a per-file query was one of the biggest per-row costs in
+  // the old walk. Those ids point into the site COLLECTION's user list, which
+  // every subsite shares, so fetching it again per subsite (as this once did)
+  // repeated the same request — up to several pages on a large tenant — for
+  // every subsite in the scan.
+  let users: Awaited<ReturnType<typeof fetchSiteUsers>> | undefined;
+
   for (const { siteUrl, libraries } of librariesPerSite) {
     if (options.signal?.aborted) break;
     currentSiteUrl = siteUrl;
-    // Author/Editor names for every library on this site, resolved once. The
-    // bulk item sweep returns numeric lookup ids rather than expanded user
-    // objects, because $expand=Author on a per-file query was one of the
-    // biggest per-row costs in the old walk.
-    const users = await fetchSiteUsers(client, siteUrl, options.signal);
+    if (!users) users = await fetchSiteUsers(client, siteUrl, options.signal);
     for (const library of libraries) {
       if (options.signal?.aborted) break;
       currentLibraryTitle = library.title;

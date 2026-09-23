@@ -97,8 +97,8 @@ export interface FlatItem {
   // sizeBytes exactly the way the rest of the app treats version history.
   // undefined when the list didn't return SMTotalFileStreamSize.
   versionSizeBytes?: number;
-  // Approximate retained MAJOR version count, derived from
-  // OData__UIVersionString — see VERSION_LABEL_FIELD above for exactly what
+  // Approximate retained version count (major AND minor), derived from
+  // OData__UIVersionString — see parseVersionCountApprox for exactly what
   // this does and doesn't capture. undefined when the list didn't return the
   // version label (folders don't have one; num() would otherwise report 0).
   versionCountApprox?: number;
@@ -169,11 +169,22 @@ function num(v: unknown): number {
   return isFinite(n) ? n : 0;
 }
 
+// Counts BOTH major and minor version increments now — it used to count only
+// major ones, which is fine for a label like "3.0" (2 retained versions) but
+// silently reported 0 for "1.3" (3 retained minor/draft versions, real bytes
+// and all), on any library measured through a bulk strategy — see
+// FlatItem.versionCountApprox. This is why the displayed count could read 0
+// on a library with minor versioning enabled (e.g. content approval) even
+// though Version History Size correctly showed nonzero storage for the same
+// files: the size comes from the bulk-measured bytes, but the count fell back
+// to this label-derived estimate on that path, and undercounted to zero.
 function parseVersionCountApprox(versionLabel: unknown): number | undefined {
   if (versionLabel == null) return undefined;
-  const major = parseInt(String(versionLabel).split('.')[0], 10);
+  const parts = String(versionLabel).split('.');
+  const major = parseInt(parts[0], 10);
   if (!isFinite(major)) return undefined;
-  return Math.max(0, major - 1);
+  const minor = parts.length > 1 ? parseInt(parts[1], 10) : 0;
+  return Math.max(0, major - 1) + (isFinite(minor) ? minor : 0);
 }
 
 // True ONLY when the version label proves the /Versions collection is empty:
@@ -316,13 +327,14 @@ async function probeMaxIdAndFields(
     if (signal?.aborted) return undefined;
     const { fields, versionFieldIncluded } = attempts[i];
     try {
-      const data = await client.getJson(probeUrl(siteUrl, library.id!, fields), true);
+      const data = await client.getJson(probeUrl(siteUrl, library.id!, fields), true, 'default', signal);
       const rows = valueArray(data);
       if (rows.length === 0) return { maxId: 0, fields, versionFieldIncluded }; // empty library
       const id = Number(rows[0].Id);
       if (!isFinite(id)) return undefined;
       return { maxId: id, fields, versionFieldIncluded };
     } catch (err: any) {
+      if (signal?.aborted) return undefined;
       // Only a field-shape problem is worth retrying with fewer fields.
       // Anything else — throttling exhausted, permissions, the $orderby/$filter
       // combination itself being rejected — will fail identically the second
@@ -381,15 +393,23 @@ async function fetchIdRange(
   // Handed the rows themselves rather than just a count, so the shared
   // accumulator can classify files vs folders without a second pass.
   onPage: (pageRows: any[]) => void,
-): Promise<any[]> {
-  const rows: any[] = [];
+): Promise<FlatItem[]> {
+  const rows: FlatItem[] = [];
   let cursor = rangeStart;
   let next: string | undefined = shardUrl(siteUrl, listId, fields, cursor, rangeEnd);
   for (let page = 0; page < 400 && next && !signal?.aborted; page++) {
-    const data = await client.getJson(next, true);
+    let data: any;
+    try {
+      data = await client.getJson(next, true, 'default', signal);
+    } catch (err) {
+      if (signal?.aborted) break; // canceled mid-wait: keep what arrived
+      throw err;
+    }
     const pageRows = valueArray(data);
-    rows.push(...pageRows);
     onPage(pageRows);
+    // Converted per page so the raw rows (with their expanded File objects)
+    // can be dropped immediately — see getJsonPagedMeta's mapRow.
+    for (const r of pageRows) rows.push(toItem(r));
     const nextLink = data?.['odata.nextLink'] ?? data?.['@odata.nextLink'];
     if (nextLink) {
       next = nextLink;
@@ -442,7 +462,7 @@ async function fetchLibraryItemsSharded(
   library: LibraryInfo,
   probe: FieldProbe,
   options?: FetchItemsOptions,
-): Promise<any[] | undefined> {
+): Promise<FlatItem[] | undefined> {
   const listId = library.id!;
   // Shard COUNT is deliberately NOT tied to scanConcurrency. Sizing shards
   // that way (maxId / scanConcurrency) was the first version of this and
@@ -503,7 +523,7 @@ async function fetchLibraryItemsSharded(
   // shards fire concurrently — if it throws, sharding is abandoned for this
   // library entirely (undefined, not a re-thrown error) so the caller falls
   // back to the proven sequential sweep, paying only this one shard's cost.
-  let canaryRows: any[];
+  let canaryRows: FlatItem[];
   try {
     canaryRows = await fetchIdRange(
       client, siteUrl, listId, probe.fields, ranges[0].start, ranges[0].end, options?.signal, onPage,
@@ -556,7 +576,7 @@ export async function fetchLibraryItems(
           // the silent data loss it used to be — but ONLY because the caller is
           // told. See FieldProbe.versionFieldIncluded.
           if (!probe.versionFieldIncluded) options?.onVersionFieldUnavailable?.();
-          return rows.map(toItem);
+          return rows;
         }
         // undefined: the canary shard failed — the ID-filter technique isn't
         // safe to use on this tenant. Fall through to the plain sequential
@@ -614,8 +634,10 @@ export async function fetchLibraryItems(
             pagesTotal: pagesHint != null && pagesDone <= pagesHint ? pagesHint : undefined,
           });
         },
+        'default',
+        toItem,
       );
-      const items = raw.map(toItem);
+      const items = raw as FlatItem[];
       // The reduced field set won, so nothing here carries inline version
       // size. Tell the caller, which owns the escalation decision (and, when
       // version history wasn't requested at all, the warning).
@@ -661,11 +683,16 @@ export async function fetchSiteUsers(
 ): Promise<Map<number, { title: string; loginName: string }>> {
   const map = new Map<number, { title: string; loginName: string }>();
   try {
-    const data = await client.getJson(
+    // Paged: a single $top=5000 page left every author past the 5,000th
+    // site user blank on large tenants. A tenant that returns no next link
+    // simply stops after the first page, exactly as before.
+    const users = await client.getJsonPaged(
       `${siteUrl}/_api/web/siteusers?$select=Id,Title,LoginName&$top=${ITEMS_PAGE_SIZE}`,
+      signal,
+      50,
     );
     if (signal?.aborted) return map;
-    for (const u of valueArray(data)) {
+    for (const u of users) {
       const id = Number(u.Id);
       if (!isFinite(id)) continue;
       map.set(id, { title: String(u.Title ?? ''), loginName: String(u.LoginName ?? '') });

@@ -62,16 +62,60 @@ interface CachedAggregate {
   // but never treated as authoritative: sizes derived from it are marked
   // approximate, and it is dropped rather than reused for a later request.
   partial: boolean;
+  // Items (files and folders) the sweep read — what the cache budget counts.
+  itemCount: number;
 }
 
+// Insertion-ordered, used as an LRU: a hit is re-inserted at the end, and the
+// oldest entries go once the budget is passed. Unbounded, browsing several
+// 200,000-item libraries kept every one of their item lists alive until
+// Refresh. Evicted libraries simply re-sweep (~1 request per 5,000 items).
+//
+// Budgeted by ITEM COUNT, not library count: a fixed library cap meant sizing
+// the site root of a site with many small libraries evicted the first ones
+// before the user could open them, forcing a re-sweep of something just read.
+// Small libraries now cost almost nothing against the budget, while a handful
+// of huge ones still can't pile up. The most recent library is always kept,
+// however large.
+const MAX_CACHED_ITEMS = 500_000;
 const aggregateCache = new Map<string, CachedAggregate>();
+// Sweeps still running, so concurrent callers for the same library (opening
+// one fires the folders and the files lookups in the same render, and the
+// site-root sizing may still be sweeping it) share one read instead of each
+// reading the whole library.
+// Progress goes to every caller joined to the sweep, not just the one that
+// started it — otherwise a view whose counter belongs to the joining call
+// showed "0 items read" for the whole sweep.
+interface InflightSweep {
+  promise: Promise<CachedAggregate>;
+  listeners: Set<WalkProgress>;
+}
+const inflight = new Map<string, InflightSweep>();
 const userCache = new Map<string, Map<number, { title: string; loginName: string }>>();
+
+function cacheSet(key: string, entry: CachedAggregate): void {
+  aggregateCache.delete(key);
+  aggregateCache.set(key, entry);
+  let total = 0;
+  aggregateCache.forEach((e) => { total += e.itemCount; });
+  while (total > MAX_CACHED_ITEMS && aggregateCache.size > 1) {
+    const oldest = aggregateCache.keys().next().value;
+    if (oldest === undefined) break;
+    total -= aggregateCache.get(oldest)?.itemCount ?? 0;
+    aggregateCache.delete(oldest);
+  }
+}
 
 function cacheKey(siteUrl: string, libraryUrl: string): string {
   return `${siteUrl}::${libraryUrl}`;
 }
 
+// Bumped by every clear, so a sweep that started before a Refresh can't write
+// its (pre-Refresh) result back into the cache when it finishes.
+let cacheGeneration = 0;
+
 export function clearAggregateCache(siteUrl?: string): void {
+  cacheGeneration++;
   if (!siteUrl) {
     aggregateCache.clear();
     userCache.clear();
@@ -80,6 +124,10 @@ export function clearAggregateCache(siteUrl?: string): void {
   const prefix = `${siteUrl}::`;
   for (const key of Array.from(aggregateCache.keys())) {
     if (key.startsWith(prefix)) aggregateCache.delete(key);
+  }
+  // Refresh must not hand back a sweep that started before it.
+  for (const key of Array.from(inflight.keys())) {
+    if (key.startsWith(prefix)) inflight.delete(key);
   }
   userCache.delete(siteUrl);
 }
@@ -97,9 +145,54 @@ export async function getLibraryAggregate(
   options?: WalkOptions,
 ): Promise<CachedAggregate> {
   const key = cacheKey(siteUrl, library.serverRelativeUrl);
-  const cached = aggregateCache.get(key);
-  if (cached && !cached.partial) return cached;
 
+  // A loop, re-checked after every wait: when a joined sweep turns out to
+  // have been canceled by someone else, another joiner may already have
+  // started the replacement — join that one rather than each starting its own.
+  for (;;) {
+    const cached = aggregateCache.get(key);
+    if (cached && !cached.partial) {
+      cacheSet(key, cached);
+      return cached;
+    }
+    const running = inflight.get(key);
+    if (!running) break;
+    const listener = options?.onWalkProgress;
+    if (listener) running.listeners.add(listener);
+    let shared: CachedAggregate;
+    try {
+      shared = await running.promise;
+    } finally {
+      if (listener) running.listeners.delete(listener);
+    }
+    // Joined a sweep someone else canceled — only acceptable if this caller
+    // was canceled too; otherwise go round and sweep (or join) for real.
+    if (!shared.partial || options?.signal?.aborted) return shared;
+  }
+
+  const listeners = new Set<WalkProgress>();
+  if (options?.onWalkProgress) listeners.add(options.onWalkProgress);
+  const promise = sweepLibrary(client, siteUrl, library, key, {
+    signal: options?.signal,
+    onWalkProgress: (n) => listeners.forEach((l) => l(n)),
+  });
+  const entry: InflightSweep = { promise, listeners };
+  inflight.set(key, entry);
+  try {
+    return await promise;
+  } finally {
+    if (inflight.get(key) === entry) inflight.delete(key);
+  }
+}
+
+async function sweepLibrary(
+  client: SpApiClient,
+  siteUrl: string,
+  library: LibraryInfo,
+  key: string,
+  options?: WalkOptions,
+): Promise<CachedAggregate> {
+  const generation = cacheGeneration;
   // The Recycle Bin has no list id and isn't addressed via `_api/web/lists`
   // at all — route it to its own fetch (recycleBin.ts) rather than
   // listItems.ts's `_api/web/lists(guid'...')/items` sweep.
@@ -121,10 +214,11 @@ export async function getLibraryAggregate(
   const entry: CachedAggregate = {
     aggregate: aggregateLibrary(library.serverRelativeUrl, items),
     partial,
+    itemCount: items.length,
   };
   // Only a complete sweep is worth keeping — caching a canceled one would
   // make the cancel sticky, so the user would have to Refresh to undo it.
-  if (!partial) aggregateCache.set(key, entry);
+  if (!partial && generation === cacheGeneration) cacheSet(key, entry);
   return entry;
 }
 
@@ -136,7 +230,9 @@ async function getUsers(
   const cached = userCache.get(siteUrl);
   if (cached) return cached;
   const users = await fetchSiteUsers(client, siteUrl, signal);
-  userCache.set(siteUrl, users);
+  // A canceled read returns an empty map; caching it would blank every
+  // Author cell for the rest of the session.
+  if (!signal?.aborted) userCache.set(siteUrl, users);
   return users;
 }
 

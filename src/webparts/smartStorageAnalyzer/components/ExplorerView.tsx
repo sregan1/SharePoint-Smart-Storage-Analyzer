@@ -14,7 +14,7 @@ import {
   makeStyles,
   tokens,
 } from '@fluentui/react-components';
-import { Document24Regular, Folder24Regular, ChevronRight16Regular, DocumentArrowDown24Regular, Info16Regular, Warning16Regular, ArrowClockwise20Regular, ArrowLeft24Regular, Delete16Regular } from '@fluentui/react-icons';
+import { Document24Regular, Folder24Regular, ChevronRight16Regular, DocumentArrowDown24Regular, Warning16Regular, ArrowClockwise20Regular, ArrowLeft24Regular, Delete16Regular } from '@fluentui/react-icons';
 
 import { StorageAnalyzerService } from '../services/StorageAnalyzerService';
 import { ExcelExportService } from '../services/ExcelExportService';
@@ -27,6 +27,7 @@ import { SizeBar } from './shared/SizeBar';
 import { formatBytes, formatAge } from './shared/formatBytes';
 import { tierColor, tierLabel } from './shared/tierBadge';
 import { useIncludeVersionHistory } from './shared/useIncludeVersionHistory';
+import { InfoTip } from './shared/InfoTip';
 import { ageInDays, classify } from '../utils/archivalClassification';
 
 const useStyles = makeStyles({
@@ -107,7 +108,7 @@ export const ExplorerView: React.FC<ExplorerViewProps> = ({
   // library (square, button row, or breadcrumb) sets this and drills in.
   const [libraryUrl, setLibraryUrl] = React.useState<string | undefined>();
   const [rollups, setRollups] = React.useState<LibraryRollup[]>([]);
-  // Starts true, and only the effect's finally clears it. Initialising to false
+  // Starts true, and only the effect's finally clears it. Initializing to false
   // would leave a render where the libraries have arrived but their rollups
   // haven't started resolving — the same "nothing is loading, so render an
   // empty treemap" gray-box gap fixed at folder level.
@@ -151,6 +152,8 @@ export const ExplorerView: React.FC<ExplorerViewProps> = ({
   // time" and gives Cancel an unambiguous target without needing to know
   // which view is loading.
   const scanAbortRef = React.useRef<AbortController | null>(null);
+  // The current folder's file lookup (see the files effect).
+  const filesAbortRef = React.useRef<AbortController | null>(null);
   // Written by the data layer's throttled onWalkProgress (potentially
   // hundreds of times a second on a huge site); flushed into state by the
   // existing elapsed-time ticker rather than driving a render per page.
@@ -195,11 +198,14 @@ export const ExplorerView: React.FC<ExplorerViewProps> = ({
   const isCurrentScan = (ctrl: AbortController): boolean => scanAbortRef.current === ctrl;
 
   const handleCancel = (): void => {
-    if (!scanAbortRef.current || cancelRequested) return;
+    // Either one may be the only thing running (e.g. the folder's children
+    // came from cache while its files are still being read).
+    if ((!scanAbortRef.current && !filesAbortRef.current) || cancelRequested) return;
     setCancelRequested(true);
     // Deliberately does NOT null the ref — staying current is what tells the
     // settling promise these partials were asked for and should be kept.
-    scanAbortRef.current.abort();
+    scanAbortRef.current?.abort();
+    filesAbortRef.current?.abort();
   };
 
   // Abort whatever is measuring when the user navigates — a different
@@ -231,7 +237,7 @@ export const ExplorerView: React.FC<ExplorerViewProps> = ({
   // can be independently re-triggered (e.g. restarted after being abandoned
   // mid-flight) without re-fetching the library list itself.
   React.useEffect(() => {
-    let cancelled = false;
+    let canceled = false;
     setLibrariesLoading(true);
     // Plain list, not getLibrariesWithStats — sizes come from getLibraryRollups
     // below. getLibrariesWithStats would, on a site with no library named
@@ -239,12 +245,12 @@ export const ExplorerView: React.FC<ExplorerViewProps> = ({
     // is the whole-site walk this view is designed to avoid.
     sp.getLibraries(siteUrl, false)
       .then((libs) => {
-        if (cancelled) return;
+        if (canceled) return;
         setLibraries(libs);
       })
-      .catch((err: any) => { if (!cancelled) setError(`Failed to load libraries: ${err?.message ?? String(err)}`); })
-      .finally(() => { if (!cancelled) setLibrariesLoading(false); });
-    return () => { cancelled = true; };
+      .catch((err: any) => { if (!canceled) setError(`Failed to load libraries: ${err?.message ?? String(err)}`); })
+      .finally(() => { if (!canceled) setLibrariesLoading(false); });
+    return () => { canceled = true; };
   }, [siteUrl, refreshToken]);
 
   // Root rollups. Runs after the library list resolves; restarts on Refresh
@@ -377,7 +383,15 @@ export const ExplorerView: React.FC<ExplorerViewProps> = ({
   // version-history toggle changes. Cache key includes the toggle state
   // since raw files fetched with it off never have versionSizeBytes.
   React.useEffect(() => {
-    if (!selectedUrl || !currentLibrary) return;
+    // Every path that doesn't start a fetch clears the loading flag: the
+    // previous run's cleanup marks its fetch stale, so that fetch will never
+    // clear it, and an early return here would leave the spinner on for good.
+    if (!selectedUrl || !currentLibrary) { setFilesLoading(false); return; }
+    // Switching library while inside a folder commits the new library one
+    // render before selectedUrl follows it; without this, that render fetched
+    // the OLD folder's path against the NEW library.
+    const libRoot = currentLibrary.serverRelativeUrl.replace(/\/+$/, '');
+    if (selectedUrl !== libRoot && !selectedUrl.startsWith(`${libRoot}/`)) { setFilesLoading(false); return; }
     const toRows = (files: RawFolderFile[]): FolderFileRow[] => files.map((f) => {
       const ageDays = ageInDays(f.timeLastModified);
       return {
@@ -398,7 +412,12 @@ export const ExplorerView: React.FC<ExplorerViewProps> = ({
     // includeVersions at all; that toggle only controls DISPLAY below.
     const cacheKey = selectedUrl;
     const cached = filesCache.current.get(cacheKey);
-    if (cached) { setSelectedFiles(toRows(cached)); setLoadedFilesKey(cacheKey); return; }
+    if (cached) {
+      setSelectedFiles(toRows(cached));
+      setLoadedFilesKey(cacheKey);
+      setFilesLoading(false);
+      return;
+    }
     // Clear the previous folder's rows before setting filesLoading — this
     // effect runs one render after selectedUrl actually changes, and without
     // this, that render would still hold the OLD folder's files (loading
@@ -406,14 +425,33 @@ export const ExplorerView: React.FC<ExplorerViewProps> = ({
     // files against the new (still-empty) folder list.
     setSelectedFiles([]);
     setFilesLoading(true);
-    sp.getFolderFiles(siteUrl, currentLibrary, selectedUrl)
+    // Its own controller: aborted when the user moves on (cleanup below) and
+    // by Cancel. It usually starts the library sweep that loadChildren then
+    // joins, so Cancel has to reach it or the shared sweep would keep going.
+    const ctrl = new AbortController();
+    filesAbortRef.current = ctrl;
+    // A late reply for a folder the user has already left must write nothing:
+    // it used to overwrite loadedFilesKey with the old folder, leaving the new
+    // folder's loading bar spinning for good.
+    let stale = false;
+    sp.getFolderFiles(siteUrl, currentLibrary, selectedUrl, {
+      signal: ctrl.signal,
+      // Same ref-only counter as loadChildren: this call usually starts the
+      // shared sweep, so it's the one that sees the pages arrive.
+      onWalkProgress: (items) => { if (items > itemsReadRef.current) itemsReadRef.current = items; },
+    })
       .then((files) => {
+        if (stale) return;
         setError('');
+        // Cached even when canceled, like loadChildren's partial children:
+        // cancel means stopped, not "restart the sweep when I come back".
+        // Refresh clears it and measures again.
         filesCache.current.set(cacheKey, files);
         setSelectedFiles(toRows(files));
         setLoadedFilesKey(cacheKey);
       })
       .catch((err: any) => {
+        if (stale) return;
         // Same reasoning as loadChildren's catch: silently showing an empty
         // file list here would misreport a fetch failure (throttling, a
         // transient error) as "this folder is genuinely empty" — surface it
@@ -425,7 +463,18 @@ export const ExplorerView: React.FC<ExplorerViewProps> = ({
         // what happened would never be reachable.
         setLoadedFilesKey(cacheKey);
       })
-      .finally(() => setFilesLoading(false));
+      .finally(() => {
+        if (stale) return;
+        setFilesLoading(false);
+        // A cancel that only had this lookup to stop must not leave the
+        // Cancel button stuck on "Canceling…" for the next load.
+        if (!scanAbortRef.current) setCancelRequested(false);
+      });
+    return () => {
+      stale = true;
+      ctrl.abort();
+      if (filesAbortRef.current === ctrl) filesAbortRef.current = null;
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedUrl, siteUrl, currentLibrary, staleDays, veryStaleDays, refreshToken]);
 
@@ -574,7 +623,7 @@ export const ExplorerView: React.FC<ExplorerViewProps> = ({
   // persistent note rather than relying on the user to notice and hover the
   // cell. The List view has no such folding, so it's always where they are.
   // ── Site-root level: one square/row per library ─────────────────────────
-  // Libraries are modelled as 'folder' items so they reuse the whole existing
+  // Libraries are modeled as 'folder' items so they reuse the whole existing
   // folder presentation (blue fill, click-to-drill, the striped "size unknown"
   // treatment) rather than needing a parallel set of cases everywhere.
   const rootTreemapItems: TreemapItem[] = React.useMemo(
@@ -623,6 +672,11 @@ export const ExplorerView: React.FC<ExplorerViewProps> = ({
     [activeListRows],
   );
 
+  // The checkbox is hidden at the library level (no files there), so the
+  // version columns must be too — otherwise, with the setting on, the root
+  // list showed a duplicate size column and two columns of "—".
+  const showVersionCols = !atRoot && includeVersions;
+
   const listColumns: StorageTableColumn<FolderListRow>[] = [
     {
       key: 'name',
@@ -648,7 +702,7 @@ export const ExplorerView: React.FC<ExplorerViewProps> = ({
     // Folders have no recursive version-history rollup (see the Version
     // History Size column below), so a folder's total is always just its
     // Current File Size — this column only adds real information for files.
-    ...(includeVersions ? [{
+    ...(showVersionCols ? [{
       key: 'totalSize',
       header: 'Total Storage Size',
       align: 'right' as const,
@@ -659,7 +713,7 @@ export const ExplorerView: React.FC<ExplorerViewProps> = ({
         if (r.sizeUnknown) {
           return (
             <Tooltip content={r.sizeErrorMessage ?? 'Size could not be determined, and no error detail was recorded. Not a confirmed empty folder.'} relationship="label">
-              <span style={{ display: 'inline-flex', alignItems: 'center', gap: '4px', color: tokens.colorPaletteMarigoldForeground1, cursor: 'help' }}>
+              <span tabIndex={0} style={{ display: 'inline-flex', alignItems: 'center', gap: '4px', color: tokens.colorPaletteMarigoldForeground1, cursor: 'help' }}>
                 <Warning16Regular /> Unknown
               </span>
             </Tooltip>
@@ -668,7 +722,7 @@ export const ExplorerView: React.FC<ExplorerViewProps> = ({
         if (r.kind === 'folder') {
           return r.sizeApproximate ? (
             <Tooltip content="At least this much. Measurement was stopped before this folder's subtree was fully counted — open the folder to measure it directly, or use Refresh to measure again." relationship="label">
-              <span style={{ cursor: 'help' }}>≥ {formatBytes(r.sizeBytes)}</span>
+              <span tabIndex={0} style={{ cursor: 'help' }}>≥ {formatBytes(r.sizeBytes)}</span>
             </Tooltip>
           ) : <span>{formatBytes(r.sizeBytes)}</span>;
         }
@@ -680,7 +734,7 @@ export const ExplorerView: React.FC<ExplorerViewProps> = ({
           <span>{formatBytes(r.sizeBytes + r.versionSizeBytes)}</span>
         ) : (
           <Tooltip content="This file's version history could not be measured, so this total is a floor — current file content only." relationship="label">
-            <span style={{ cursor: 'help' }}>≥ {formatBytes(r.sizeBytes)}</span>
+            <span tabIndex={0} style={{ cursor: 'help' }}>≥ {formatBytes(r.sizeBytes)}</span>
           </Tooltip>
         );
       },
@@ -695,7 +749,7 @@ export const ExplorerView: React.FC<ExplorerViewProps> = ({
       sortValue: (r) => (r.sizeUnknown ? -1 : r.sizeBytes),
       render: (r) => (r.sizeUnknown ? (
         <Tooltip content={r.sizeErrorMessage ?? 'Size could not be determined, and no error detail was recorded. Not a confirmed empty folder.'} relationship="label">
-          <span style={{ display: 'inline-flex', alignItems: 'center', gap: '4px', color: tokens.colorPaletteMarigoldForeground1, cursor: 'help' }}>
+          <span tabIndex={0} style={{ display: 'inline-flex', alignItems: 'center', gap: '4px', color: tokens.colorPaletteMarigoldForeground1, cursor: 'help' }}>
             <Warning16Regular /> Unknown
           </span>
         </Tooltip>
@@ -703,7 +757,7 @@ export const ExplorerView: React.FC<ExplorerViewProps> = ({
         <div style={{ display: 'flex', alignItems: 'center', gap: '8px', justifyContent: 'flex-end' }}>
           {r.sizeApproximate ? (
             <Tooltip content="At least this much. Measurement was stopped before this folder's subtree was fully counted — open the folder to measure it directly, or use Refresh to measure again." relationship="label">
-              <span style={{ minWidth: '64px', textAlign: 'right', cursor: 'help' }}>≥ {formatBytes(r.sizeBytes)}</span>
+              <span tabIndex={0} style={{ minWidth: '64px', textAlign: 'right', cursor: 'help' }}>≥ {formatBytes(r.sizeBytes)}</span>
             </Tooltip>
           ) : (
             <span style={{ minWidth: '64px', textAlign: 'right' }}>{formatBytes(r.sizeBytes)}</span>
@@ -719,7 +773,7 @@ export const ExplorerView: React.FC<ExplorerViewProps> = ({
       sortValue: (r) => r.itemCount ?? -1,
       render: (r) => <span>{r.kind === 'folder' ? (r.sizeUnknown ? '—' : r.itemCount ?? '—') : ''}</span>,
     },
-    ...(includeVersions ? [{
+    ...(showVersionCols ? [{
       key: 'versionSize',
       // The Size column above is content size only — SharePoint's folder
       // rollup (StorageMetrics / live walk) has no recursive version-history
@@ -785,8 +839,8 @@ export const ExplorerView: React.FC<ExplorerViewProps> = ({
   };
 
   // Re-measure the current view from SharePoint. All three caches must go:
-  // the sessionStorage folder-size cache (survives a page reload, 10-min TTL)
-  // plus the two in-memory maps. Clearing only the persistent one would leave
+  // the data layer's per-library aggregate cache plus the two in-memory maps
+  // here. Clearing only the data layer's would leave
   // loadChildren short-circuiting on its in-memory copy — which is precisely
   // why an "Unknown" folder was previously unretryable for the whole session.
   const handleRefresh = (): void => {
@@ -952,7 +1006,7 @@ export const ExplorerView: React.FC<ExplorerViewProps> = ({
                 <Tooltip
                   key={l.serverRelativeUrl}
                   content="First-stage Recycle Bin — items an end user can still restore. Items purged to the site collection Recycle Bin require Site Collection Administrator access and aren't included."
-                  relationship="label"
+                  relationship="description"
                 >
                   <Button
                     appearance={l.serverRelativeUrl === libraryUrl ? 'primary' : 'secondary'}
@@ -997,27 +1051,29 @@ export const ExplorerView: React.FC<ExplorerViewProps> = ({
           </TabList>
 
           <div style={{ marginBottom: tokens.spacingVerticalS, display: 'flex', alignItems: 'center', gap: tokens.spacingHorizontalS }}>
-            {/* Version history is hidden at the library level: it's a per-file
-                measurement and there are no files at this level. */}
-            {!atRoot && (
-              <div style={{ display: 'flex', alignItems: 'center', gap: tokens.spacingHorizontalXS }}>
-                <Checkbox
-                  label="Include Version History Size"
-                  checked={includeVersions}
-                  onChange={(_, d) => setIncludeVersions(!!d.checked)}
-                />
-                <Tooltip
-                  content="Only individual files get a real version-history number — SharePoint's folder size rollup has no recursive version-history total, so a folder's Current File Size never includes its files' version history, on or off. Version History Size is exact; Version Count is an estimate based on the file's current version number, so it can run slightly high (never low) on a library with a configured version-retention limit."
-                  relationship="label"
-                >
-                  <Info16Regular style={{ cursor: 'help', color: tokens.colorNeutralForeground3 }} />
-                </Tooltip>
-              </div>
-            )}
-            <div style={{ display: 'flex', alignItems: 'center', gap: tokens.spacingHorizontalS, marginLeft: atRoot ? 0 : 'auto' }}>
+            {/* Shown at the root too, even though it has no effect on library/
+                folder rollups there (see the tooltip) — it's a shared setting
+                that decides what happens the moment a library is opened, and
+                hiding it here made it invisible for however long the root
+                sweep runs, which is most of what you see right after clicking
+                Tree View or List View. */}
+            <div style={{ display: 'flex', alignItems: 'center', gap: tokens.spacingHorizontalXS }}>
+              <Checkbox
+                label="Include Version History Size"
+                checked={includeVersions}
+                onChange={(_, d) => setIncludeVersions(!!d.checked)}
+              />
+              <InfoTip
+                label="About Version History Size"
+                content={atRoot
+                  ? "Only individual files get a real version-history number — library and folder sizes never include it, so this has no effect on the treemap or list you're looking at right now. It decides whether files show it once you open a library. This setting is shared with the Storage Report and remembered."
+                  : "Only individual files get a real version-history number — SharePoint's folder size rollup has no recursive version-history total, so a folder's Current File Size never includes its files' version history, on or off. Version History Size is exact; Version Count is an estimate based on the file's current version number, so it can run slightly high (never low) on a library with a configured version-retention limit. This setting is shared with the Storage Report and remembered."}
+              />
+            </div>
+            <div style={{ display: 'flex', alignItems: 'center', gap: tokens.spacingHorizontalS, marginLeft: 'auto' }}>
               <Tooltip
-                content="Discard cached sizes and measure this view again. Use this to retry folders showing Unknown or ≥, or after content has changed — sizes are otherwise cached for about 10 minutes."
-                relationship="label"
+                content="Discard cached sizes and measure this view again. Use this to retry folders showing Unknown or ≥, or after content has changed — sizes are otherwise kept until the page is reloaded."
+                relationship="description"
               >
                 <Button
                   icon={<ArrowClockwise20Regular />}
@@ -1032,7 +1088,7 @@ export const ExplorerView: React.FC<ExplorerViewProps> = ({
               {showLoading && (
                 <Tooltip
                   content="Stop measuring now and keep what has been measured so far. Folders that weren't finished show “≥ size” or “Unknown”."
-                  relationship="label"
+                  relationship="description"
                 >
                   <Button appearance="secondary" size="small" onClick={handleCancel} disabled={cancelRequested}>
                     {cancelRequested ? 'Canceling…' : 'Cancel'}
@@ -1100,7 +1156,15 @@ export const ExplorerView: React.FC<ExplorerViewProps> = ({
                   {atRoot ? 'No libraries found on this site.' : 'This folder is empty.'}
                 </Body1>
               ) : (
-                <StorageTable rows={activeListRows} columns={listColumns} getRowKey={(r) => r.serverRelativeUrl} defaultSortKey="size" />
+                <StorageTable
+                  rows={activeListRows}
+                  columns={listColumns}
+                  getRowKey={(r) => r.serverRelativeUrl}
+                  defaultSortKey="size"
+                  // A folder with tens of thousands of files otherwise renders
+                  // every row (each with tooltips and a size bar) at once.
+                  pageSize={200}
+                />
               )}
             </div>
           )}

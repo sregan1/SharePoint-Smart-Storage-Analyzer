@@ -6,6 +6,7 @@ import {
   Body1,
   Tooltip,
   makeStyles,
+  mergeClasses,
   tokens,
 } from '@fluentui/react-components';
 import {
@@ -16,6 +17,7 @@ import {
   LockClosed16Regular,
 } from '@fluentui/react-icons';
 import { AppView } from './App';
+import { readableTextOn } from './shared/readableText';
 import screenshotTree from '../assets/screenshot_tree.png';
 import screenshotList from '../assets/screenshot_list.png';
 import screenshotReport from '../assets/screenshot_report.png';
@@ -99,9 +101,14 @@ const useStyles = makeStyles({
     width: '100%',
     minHeight: '36px',
   },
+  // Dimmed but still legible — the old 0.15 opacity made the text unreadable,
+  // which also hid what the card would do once access is granted.
   cardDisabled: {
-    opacity: '0.15',
-    pointerEvents: 'none',
+    opacity: '0.6',
+    cursor: 'not-allowed',
+    ':hover': {
+      boxShadow: tokens.shadow4,
+    },
   },
 });
 
@@ -113,6 +120,7 @@ export interface HomeViewProps {
 
 export const HomeView: React.FC<HomeViewProps> = ({ onNavigate, primaryColor, canManageWeb }) => {
   const styles = useStyles();
+  const bannerText = readableTextOn(primaryColor);
 
   const cards = [
     {
@@ -147,8 +155,8 @@ export const HomeView: React.FC<HomeViewProps> = ({ onNavigate, primaryColor, ca
   return (
     <div>
       <div className={styles.banner} style={{ background: primaryColor }}>
-        <HardDrive24Regular style={{ color: 'white', fontSize: '20px', flexShrink: 0 }} />
-        <Text style={{ color: 'white', fontWeight: tokens.fontWeightSemibold, whiteSpace: 'nowrap' }}>
+        <HardDrive24Regular style={{ color: bannerText, fontSize: '20px', flexShrink: 0 }} />
+        <Text style={{ color: bannerText, fontWeight: tokens.fontWeightSemibold, whiteSpace: 'nowrap' }}>
           SharePoint Smart Storage Analyzer
         </Text>
       </div>
@@ -185,17 +193,28 @@ export const HomeView: React.FC<HomeViewProps> = ({ onNavigate, primaryColor, ca
         <div className={styles.grid}>
           {cards.map(({ view, icon, title, screenshot, alt, desc, buttonLabel }) => {
             const disabled = canManageWeb === false;
-            const card = (
+            // The button is the one interactive element (keyboard and screen
+            // readers reach it); clicking anywhere else on the card is a mouse
+            // convenience only. A role="button" card wrapping a real button
+            // announced as nested buttons.
+            const navButton = (
+              <Button
+                appearance="primary"
+                className={styles.navButton}
+                disabledFocusable={disabled}
+                onClick={disabled ? undefined : (e) => { e.stopPropagation(); onNavigate(view); }}
+                icon={disabled ? <LockClosed16Regular /> : undefined}
+                iconPosition="after"
+              >
+                {buttonLabel}
+              </Button>
+            );
+            return (
               <Card
                 key={view}
-                className={`${styles.card}${disabled ? ` ${styles.cardDisabled}` : ''}`}
+                className={mergeClasses(styles.card, disabled && styles.cardDisabled)}
                 style={disabled ? { filter: 'grayscale(1)' } : undefined}
                 onClick={disabled ? undefined : () => onNavigate(view)}
-                role="button"
-                tabIndex={disabled ? -1 : 0}
-                aria-disabled={disabled}
-                aria-label={buttonLabel}
-                onKeyDown={disabled ? undefined : (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onNavigate(view); } }}
               >
                 <div className={styles.cardBody}>
                   <div className={styles.cardTitleRow}>
@@ -206,24 +225,14 @@ export const HomeView: React.FC<HomeViewProps> = ({ onNavigate, primaryColor, ca
                 </div>
                 <img src={screenshot} alt={alt} className={styles.cardImage} />
                 <div className={styles.cardFooter}>
-                  <Button
-                    appearance="primary"
-                    className={styles.navButton}
-                    tabIndex={-1}
-                    disabled={disabled}
-                    icon={disabled ? <LockClosed16Regular /> : undefined}
-                    iconPosition="after"
-                  >
-                    {buttonLabel}
-                  </Button>
+                  {disabled ? (
+                    <Tooltip content="Requires Site Owner access" relationship="description">
+                      {navButton}
+                    </Tooltip>
+                  ) : navButton}
                 </div>
               </Card>
             );
-            return disabled ? (
-              <Tooltip key={view} content="Requires Site Owner access" relationship="description">
-                <div style={{ cursor: 'not-allowed' }}>{card}</div>
-              </Tooltip>
-            ) : card;
           })}
         </div>
 

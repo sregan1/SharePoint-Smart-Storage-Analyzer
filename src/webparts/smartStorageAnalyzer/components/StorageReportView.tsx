@@ -10,7 +10,6 @@ import {
   MessageBar,
   MessageBarBody,
   Divider,
-  Tooltip,
   Spinner,
   makeStyles,
   tokens,
@@ -21,7 +20,6 @@ import {
   History24Regular,
   Delete24Regular,
   Document24Regular,
-  Info16Regular,
 } from '@fluentui/react-icons';
 
 import { StorageAnalyzerService } from '../services/StorageAnalyzerService';
@@ -36,7 +34,9 @@ import { TierLegend } from './shared/Treemap';
 import { formatBytes, formatAge, formatDuration, formatElapsed } from './shared/formatBytes';
 import { tierColor, tierLabel } from './shared/tierBadge';
 import { useIncludeVersionHistory } from './shared/useIncludeVersionHistory';
+import { InfoTip } from './shared/InfoTip';
 import { diffReports } from '../utils/reportDiff';
+import { isVersionHistoryIncomplete, usedVersionStrategy } from '../utils/versionCompleteness';
 
 const useStyles = makeStyles({
   root: {
@@ -190,9 +190,9 @@ export const StorageReportView: React.FC<StorageReportViewProps> = ({
 
   const [subsites, setSubsites] = React.useState(includeSubsites);
   const [hidden, setHidden] = React.useState(includeHidden);
-  // Shared with Tree View/List View — see useIncludeVersionHistory. Defaults
-  // on here: Version History Size is real storage against the site's quota,
-  // and Storage Report is the comprehensive "give me the true number" view.
+  // Shared with Tree View/List View — see useIncludeVersionHistory. Off by
+  // default (it's real extra measurement work); check it explicitly for the
+  // true total-storage number.
   const [includeVersions, setIncludeVersions] = useIncludeVersionHistory();
   // Pulled off the client on the scan ticker rather than pushed through
   // ScanProgress: both are properties of the API client, not of the scan, and
@@ -224,6 +224,8 @@ export const StorageReportView: React.FC<StorageReportViewProps> = ({
   const [history, setHistory] = React.useState<StoredReportMeta[]>([]);
   const [compareIds, setCompareIds] = React.useState<string[]>([]);
   const [showAllSites, setShowAllSites] = React.useState(false);
+  // Deleting a saved scan can't be undone, so it takes a second click.
+  const [confirmDeleteId, setConfirmDeleteId] = React.useState<string | null>(null);
 
   // Which history entry's View was just clicked, and which export is running —
   // purely so the button can show a spinner immediately. Both View (setting
@@ -243,6 +245,15 @@ export const StorageReportView: React.FC<StorageReportViewProps> = ({
   // tick rather than on every file, so a single-library scan shows live
   // movement without re-rendering per file.
   const scannedRef = React.useRef(0);
+
+  // Leaving the screen mid-scan (Back, or the Settings gear) used to leave the
+  // whole-site walk running unseen — still spending the tenant's request
+  // budget and writing state into an unmounted component. Unmount cancels it.
+  const mountedRef = React.useRef(true);
+  React.useEffect(() => () => {
+    mountedRef.current = false;
+    abortControllerRef.current?.abort();
+  }, []);
 
   const loadHistory = React.useCallback((): void => {
     reportHistory.getAll().then(setHistory).catch(() => setHistory([]));
@@ -295,9 +306,13 @@ export const StorageReportView: React.FC<StorageReportViewProps> = ({
           scanConcurrency: sp.scanConcurrency, signal: abortController.signal,
           includeVersionHistory: includeVersions,
         },
-        (p) => { scannedRef.current = p.scanned; setProgress(p); },
+        (p) => { scannedRef.current = p.scanned; if (mountedRef.current) setProgress(p); },
         () => { scannedRef.current++; },
       );
+      if (!mountedRef.current) return;
+      // A saved report opened mid-scan must not keep labeling these fresh
+      // results as that saved report (its thresholds, site and version column).
+      setViewedReport(null);
       setEntries(result.entries);
       setSummary(result.summary);
 
@@ -323,34 +338,49 @@ export const StorageReportView: React.FC<StorageReportViewProps> = ({
           entryCount: result.entries.length,
         };
         try {
-          const { listingSaved } = await reportHistory.add(stored);
+          const { listingSaved, quotaExceeded } = await reportHistory.add(stored);
+          if (!mountedRef.current) return;
           if (!listingSaved) {
             // The numbers were saved; only the per-file listing didn't fit. Say
             // exactly that, because "could not be saved" would imply the whole
             // report was lost when the summary and every comparison still work.
-            setWarning(
-              'Scan completed and saved, but browser storage was full so this report\'s file '
-              + 'listing was not kept — its totals and comparisons are unaffected. Delete an older '
-              + 'report to free space.',
-            );
+            setWarning(quotaExceeded
+              ? 'Scan completed and saved, but browser storage was full so this report\'s file '
+                + 'listing was not kept — its totals and comparisons are unaffected. Delete an older '
+                + 'report to free space.'
+              : 'Scan completed and saved, but this report\'s file listing was too large for the '
+                + 'browser to store — its totals and comparisons are unaffected. Export it now if you '
+                + 'need the file-level detail later.');
           }
           loadHistory();
         } catch (err: any) {
           // The scan itself succeeded and its results are already on
           // screen — only the save to history failed. Reporting this as
           // "Scan failed" would be actively misleading.
-          setWarning(`Scan completed, but the report could not be saved to history: ${err?.message ?? String(err)}`);
+          if (mountedRef.current) setWarning(`Scan completed, but the report could not be saved to history: ${err?.message ?? String(err)}`);
         }
       }
     } catch (err: any) {
-      setError(`Scan failed: ${err?.message ?? String(err)}`);
+      if (mountedRef.current) setError(`Scan failed: ${err?.message ?? String(err)}`);
     } finally {
       clearInterval(timer);
-      setScanning(false);
-      setCancelRequested(false);
-      setProgress(null);
       abortControllerRef.current = null;
+      if (mountedRef.current) {
+        setScanning(false);
+        setCancelRequested(false);
+        setProgress(null);
+      }
     }
+  };
+
+  const handleDelete = (id: string): void => {
+    setConfirmDeleteId(null);
+    reportHistory.delete(id)
+      .then(() => {
+        setCompareIds((prev) => prev.filter((x) => x !== id));
+        loadHistory();
+      })
+      .catch((err: any) => setError(`Could not delete the saved scan: ${err?.message ?? String(err)}`));
   };
 
   const handleCancel = (): void => {
@@ -406,9 +436,12 @@ export const StorageReportView: React.FC<StorageReportViewProps> = ({
   // A report loaded from history shows/hides the version column based on how
   // THAT scan was run, independent of the current (possibly different)
   // checkbox state — mirrors effectiveStaleDays/effectiveVeryStaleDays below.
+  // A live scan's results follow what that scan measured, not the checkbox —
+  // toggling it after a scan finishes must not add a column of "—" (or hide
+  // real data) while the tiles and exports still reflect the scan.
   const effectiveVersionHistoryIncluded = viewedReport
     ? !!viewedReport.options.includeVersionHistory
-    : includeVersions;
+    : (summary ? !!summary.versionHistoryIncluded : includeVersions);
 
   const columns: StorageTableColumn<FileEntry>[] = [
     { key: 'library', header: 'Library', sortValue: (e) => e.libraryTitle, render: (e) => <span>{e.libraryTitle}</span> },
@@ -585,6 +618,8 @@ export const StorageReportView: React.FC<StorageReportViewProps> = ({
     return remaining / (stageDone / stageElapsed);
     // `elapsed` ticks every 500ms and is what makes this re-run.
   }, [progress, elapsed, throttled]);
+
+  const versionIncomplete = summary ? isVersionHistoryIncomplete(summary) : false;
 
   const partialWarnings: string[] = [];
   if (summary) {
@@ -798,12 +833,10 @@ export const StorageReportView: React.FC<StorageReportViewProps> = ({
             {' · '}{formatElapsed(elapsed)}
             {etaSeconds != null && ` · ~${formatDuration(etaSeconds)} left`}
             {' '}
-            <Tooltip
-              relationship="label"
+            <InfoTip
+              label="Scan details"
               content={{ children: <ScanStatusTooltip progress={progress} requestCount={requestCount} /> }}
-            >
-              <Info16Regular style={{ verticalAlign: 'middle', cursor: 'help' }} />
-            </Tooltip>
+            />
           </Text>
         </div>
       )}
@@ -822,27 +855,25 @@ export const StorageReportView: React.FC<StorageReportViewProps> = ({
               <div className={styles.totalTile}>
                 <Text style={{ fontSize: tokens.fontSizeBase200, color: tokens.colorNeutralForeground3 }}>
                   Total Storage Size{' '}
-                  <Tooltip
-                    content="Current File Size plus Version History Size combined — every byte the scanned files consume, current content and retained older versions together."
-                    relationship="label"
-                  >
-                    <Info16Regular style={{ verticalAlign: 'middle', cursor: 'help' }} />
-                  </Tooltip>
+                  <InfoTip
+                    label="About Total Storage Size"
+                    content={versionIncomplete
+                      ? 'Current File Size plus Version History Size combined. Some files\' version history could not be measured, so this is a floor — the real total is at least this much.'
+                      : 'Current File Size plus Version History Size combined — every byte the scanned files consume, current content and retained older versions together.'}
+                  />
                 </Text>
                 <Text weight="bold" style={{ display: 'block', fontSize: tokens.fontSizeBase600, color: tokens.colorBrandForeground1 }}>
-                  {formatBytes(summary.totalSizeBytes + (summary.totalVersionSizeBytes ?? 0))}
+                  {versionIncomplete ? '≥ ' : ''}{formatBytes(summary.totalSizeBytes + (summary.totalVersionSizeBytes ?? 0))}
                 </Text>
               </div>
             )}
             <div className={`${styles.statTile} ${styles.sizeTile}`}>
               <Text style={{ fontSize: tokens.fontSizeBase200, color: tokens.colorNeutralForeground3 }}>
                 Current File Size{' '}
-                <Tooltip
+                <InfoTip
+                  label="About Current File Size"
                   content="Sum of every scanned file's current content only — not an estimate, and never includes version history, whether or not that option was enabled for this scan. See Version History Size (when shown) for that additional storage."
-                  relationship="label"
-                >
-                  <Info16Regular style={{ verticalAlign: 'middle', cursor: 'help' }} />
-                </Tooltip>
+                />
               </Text>
               <Text weight="semibold" style={{ display: 'block', fontSize: tokens.fontSizeBase500 }}>{formatBytes(summary.totalSizeBytes)}</Text>
             </div>
@@ -851,14 +882,12 @@ export const StorageReportView: React.FC<StorageReportViewProps> = ({
                 <div className={`${styles.statTile} ${styles.sizeTile}`}>
                   <Text style={{ fontSize: tokens.fontSizeBase200, color: tokens.colorNeutralForeground3 }}>
                     Version History Size{' '}
-                    <Tooltip
+                    <InfoTip
+                      label="About Version History Size"
                       content="Storage used by older, retained versions of files (SharePoint's version history), on top of the current file content already counted in Current File Size. This is additional storage consumed in the library."
-                      relationship="label"
-                    >
-                      <Info16Regular style={{ verticalAlign: 'middle', cursor: 'help' }} />
-                    </Tooltip>
+                    />
                   </Text>
-                  <Text weight="semibold" style={{ display: 'block', fontSize: tokens.fontSizeBase500, color: tokens.colorBrandForeground1 }}>{formatBytes(summary.totalVersionSizeBytes ?? 0)}</Text>
+                  <Text weight="semibold" style={{ display: 'block', fontSize: tokens.fontSizeBase500, color: tokens.colorBrandForeground1 }}>{versionIncomplete ? '≥ ' : ''}{formatBytes(summary.totalVersionSizeBytes ?? 0)}</Text>
                   {/* Count is the same per-file number Excel's Details sheet
                       already had; this is just its sum, same treatment as the
                       size total above. */}
@@ -876,14 +905,14 @@ export const StorageReportView: React.FC<StorageReportViewProps> = ({
                       measured now, so anything left over means the pass was
                       interrupted or a list had no usable source — either way the
                       total is a floor and must say so. */}
-                  {summary.versionSizeStrategy === 'per-file' && (
+                  {usedVersionStrategy(summary, 'per-file') && (
                     <Text style={{ display: 'block', fontSize: tokens.fontSizeBase200, color: tokens.colorNeutralForeground3 }}>
                       {(summary.unmeasuredVersions ?? 0) > 0
                         ? 'measured per file — incomplete, so this is a floor'
                         : 'measured per file — all files with versions'}
                     </Text>
                   )}
-                  {summary.versionSizeStrategy === 'none' && (
+                  {usedVersionStrategy(summary, 'none') && (
                     <Text style={{ display: 'block', fontSize: tokens.fontSizeBase200, color: tokens.colorPaletteMarigoldForeground1 }}>
                       incomplete — no version-history source available for at least one library
                     </Text>
@@ -970,14 +999,26 @@ export const StorageReportView: React.FC<StorageReportViewProps> = ({
             <Body1 style={{ color: tokens.colorNeutralForeground3 }}>No saved scans for this site yet.</Body1>
           ) : visibleHistory.map((h) => (
             <div key={h.id} className={styles.historyRow}>
-              <Checkbox checked={compareIds.indexOf(h.id) !== -1} onChange={() => toggleCompare(h.id)} />
+              <Checkbox
+                checked={compareIds.indexOf(h.id) !== -1}
+                onChange={() => toggleCompare(h.id)}
+                aria-label={`Compare scan from ${new Date(h.timestamp).toLocaleString()}`}
+              />
               <Text style={{ minWidth: '160px' }}>{new Date(h.timestamp).toLocaleString()}</Text>
               <Badge appearance="tint" title={h.siteUrl}>{siteLabel(h.siteUrl)}</Badge>
-              <Badge appearance="tint">{formatBytes(h.summary.totalSizeBytes)}</Badge>
-              <Badge appearance="tint" color="warning">{h.summary.staleCount + h.summary.veryStaleCount} stale</Badge>
+              {/* Self-describing text rather than a hover title, which neither
+                  keyboard nor screen-reader users get. */}
               {h.summary.versionHistoryIncluded && (
-                <Badge appearance="tint" title="Version History Size">{formatBytes(h.summary.totalVersionSizeBytes ?? 0)} versions</Badge>
+                <Badge appearance="tint">
+                  {isVersionHistoryIncomplete(h.summary) ? '≥ ' : ''}
+                  {formatBytes(h.summary.totalSizeBytes + (h.summary.totalVersionSizeBytes ?? 0))} total
+                </Badge>
               )}
+              <Badge appearance="tint">{formatBytes(h.summary.totalSizeBytes)} current files</Badge>
+              {h.summary.versionHistoryIncluded && (
+                <Badge appearance="tint">{formatBytes(h.summary.totalVersionSizeBytes ?? 0)} version history</Badge>
+              )}
+              <Badge appearance="tint" color="warning">{h.summary.staleCount + h.summary.veryStaleCount} stale</Badge>
               {/* Only when the file listing genuinely isn't retrievable. This was
                   a "Partial" badge shown for any report over 50,000 rows, which
                   described a saved-listing detail in a word that reads as "your
@@ -996,17 +1037,27 @@ export const StorageReportView: React.FC<StorageReportViewProps> = ({
                 size="small"
                 icon={pendingViewId === h.id ? <Spinner size="tiny" /> : undefined}
                 onClick={() => viewReport(h)}
-                disabled={!!pendingViewId}
+                // Not during a scan: its results would land under this saved
+                // report's label, thresholds and site.
+                disabled={!!pendingViewId || scanning}
               >
                 View
               </Button>
-              <Button
-                appearance="subtle"
-                size="small"
-                icon={<Delete24Regular />}
-                aria-label="Delete scan"
-                onClick={() => reportHistory.delete(h.id).then(loadHistory)}
-              />
+              {confirmDeleteId === h.id ? (
+                <>
+                  <Text style={{ fontSize: tokens.fontSizeBase200 }}>Delete this scan?</Text>
+                  <Button size="small" appearance="primary" onClick={() => handleDelete(h.id)}>Delete</Button>
+                  <Button size="small" appearance="secondary" onClick={() => setConfirmDeleteId(null)}>Keep</Button>
+                </>
+              ) : (
+                <Button
+                  appearance="subtle"
+                  size="small"
+                  icon={<Delete24Regular />}
+                  aria-label={`Delete scan from ${new Date(h.timestamp).toLocaleString()}`}
+                  onClick={() => setConfirmDeleteId(h.id)}
+                />
+              )}
             </div>
           ))}
         </>

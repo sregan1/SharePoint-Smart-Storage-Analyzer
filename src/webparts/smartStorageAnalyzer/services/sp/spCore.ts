@@ -101,6 +101,18 @@ export const LIBRARY_TEMPLATES = [101, 109, 119];
 // than as a throttling exemption.
 const CLIENT_TAG = 'SmartStorageAnalyzer/1.2.0';
 
+// Rejection used when a request is abandoned because its scan was canceled.
+// Named like the DOM's AbortError so callers can tell it from a real failure.
+export function abortError(): Error {
+  const err = new Error('Request canceled');
+  err.name = 'AbortError';
+  return err;
+}
+
+function throwIfAborted(signal?: AbortSignal): void {
+  if (signal?.aborted) throw abortError();
+}
+
 // Which $batch envelope a coalesced request belongs to. Purely a size policy:
 // 'small' promises a tiny, bounded response and so tolerates a bigger envelope
 // (see BATCH_MAX_SMALL). Groups are also never mixed within one envelope, so a
@@ -196,10 +208,26 @@ export class SpApiClient {
     return Math.max(1, Math.floor(this._scanConcurrency / divisor));
   }
 
-  private async acquireSlot(): Promise<void> {
+  // `signal` lets a canceled scan stop waiting instead of queuing behind the
+  // ceiling for as long as the tenant keeps it low.
+  private async acquireSlot(signal?: AbortSignal): Promise<void> {
     while (this.inFlight >= this.effectiveConcurrency()) {
-      await new Promise<void>((resolve) => { this.slotWaiters.push(resolve); });
+      throwIfAborted(signal);
+      await new Promise<void>((resolve) => {
+        const onAbort = (): void => {
+          const i = this.slotWaiters.indexOf(waiter);
+          if (i !== -1) this.slotWaiters.splice(i, 1);
+          resolve();
+        };
+        const waiter = (): void => {
+          signal?.removeEventListener('abort', onAbort);
+          resolve();
+        };
+        this.slotWaiters.push(waiter);
+        signal?.addEventListener('abort', onAbort, { once: true });
+      });
     }
+    throwIfAborted(signal);
     this.inFlight++;
   }
 
@@ -211,8 +239,9 @@ export class SpApiClient {
   // Blocks until the global throttle window has passed. Sleeps in short
   // slices rather than one long timer so a window that gets shortened (or a
   // scan the user cancels) isn't stuck waiting on a stale deadline.
-  private async waitOutThrottle(): Promise<void> {
+  private async waitOutThrottle(signal?: AbortSignal): Promise<void> {
     for (;;) {
+      throwIfAborted(signal);
       const remaining = this.throttledUntilMs - Date.now();
       if (remaining <= 0) return;
       await new Promise((r) => setTimeout(r, Math.min(remaining, 500)));
@@ -303,6 +332,9 @@ export class SpApiClient {
   // without any of them changing.
   private batchQueue: {
     url: string; group: BatchGroup; resolve: (v: any) => void; reject: (e: any) => void;
+    signal?: AbortSignal;
+    // How many times this member has come back throttled inside a batch.
+    throttledAttempts: number;
   }[] = [];
   private batchTimer: ReturnType<typeof setTimeout> | undefined;
   private batchSeq = 0;
@@ -350,10 +382,20 @@ export class SpApiClient {
    * oversized member delays every unrelated request that landed in the same
    * 15ms window. Bulk paged reads (see listItems.ts) pass true.
    */
-  public async getJson(url: string, skipBatch = false, group: BatchGroup = 'default'): Promise<any> {
-    if (!this.batchingEnabled || skipBatch) return this.getJsonDirect(url);
+  public async getJson(
+    url: string,
+    skipBatch = false,
+    group: BatchGroup = 'default',
+    signal?: AbortSignal,
+  ): Promise<any> {
+    throwIfAborted(signal);
+    if (!this.batchingEnabled || skipBatch) return this.getJsonDirect(url, 0, signal);
+    return this.enqueue(url, group, signal, 0);
+  }
+
+  private enqueue(url: string, group: BatchGroup, signal: AbortSignal | undefined, throttledAttempts: number): Promise<any> {
     return new Promise<any>((resolve, reject) => {
-      this.batchQueue.push({ url, group, resolve, reject });
+      this.batchQueue.push({ url, group, resolve, reject, signal, throttledAttempts });
       // Count only this request's OWN group against its own ceiling. A plain
       // length check on the mixed queue would either flush a 'small' group
       // long before it filled (because unrelated 'default' requests pushed the
@@ -402,10 +444,17 @@ export class SpApiClient {
     });
   }
 
-  private async sendBatch(siteUrl: string, group: typeof this.batchQueue): Promise<void> {
+  private async sendBatch(siteUrl: string, queued: typeof this.batchQueue): Promise<void> {
+    // Members canceled while they waited in the queue never go out.
+    const group = queued.filter((item) => {
+      if (!item.signal?.aborted) return true;
+      item.reject(abortError());
+      return false;
+    });
+    if (group.length === 0) return;
     // Not worth the multipart envelope for a lone request.
     if (group.length === 1) {
-      try { group[0].resolve(await this.getJsonDirect(group[0].url)); }
+      try { group[0].resolve(await this.getJsonDirect(group[0].url, 0, group[0].signal)); }
       catch (err) { group[0].reject(err); }
       return;
     }
@@ -447,7 +496,7 @@ export class SpApiClient {
         );
       }
       await Promise.all(group.map(async (item) => {
-        try { item.resolve(await this.getJsonDirect(item.url)); }
+        try { item.resolve(await this.getJsonDirect(item.url, 0, item.signal)); }
         catch (e) { item.reject(e); }
       }));
       return;
@@ -464,20 +513,36 @@ export class SpApiClient {
         'falling back to individual requests for this group.',
       );
       await Promise.all(group.map(async (item) => {
-        try { item.resolve(await this.getJsonDirect(item.url)); }
+        try { item.resolve(await this.getJsonDirect(item.url, 0, item.signal)); }
         catch (err) { item.reject(err); }
       }));
       return;
     }
 
+    // SPO usually answers a throttled $batch with 200 overall and 429/503 on
+    // each member. Resending each of those straight away as its own request
+    // turned one throttled 50-member batch into 50 immediate requests with no
+    // pause — the amplification postBatch already refuses for the envelope.
+    // Instead: trip the shared gate once for the whole batch, then put the
+    // members back in the queue so they batch again after the pause.
+    const throttledCount = parts.filter((p) => SpApiClient.isThrottleResponse(p.status)).length;
+    if (throttledCount > 0) {
+      this.noteThrottled(SpApiClient.RETRY_BACKOFF_SECONDS[
+        Math.min(this.consecutiveThrottles, SpApiClient.RETRY_BACKOFF_SECONDS.length - 1)
+      ]);
+    }
+
     await Promise.all(group.map(async (item, i) => {
       const part = parts[i];
-      // A member throttled inside the batch is retried on its own, through
-      // the normal governor/backoff path, so it gets the same treatment an
-      // unbatched request would.
       if (SpApiClient.isThrottleResponse(part.status)) {
-        try { item.resolve(await this.getJsonDirect(item.url)); }
-        catch (err) { item.reject(err); }
+        try {
+          const attempts = item.throttledAttempts + 1;
+          // Past the budget, fall back to one individual request with its own
+          // retry budget rather than cycling the queue forever.
+          item.resolve(attempts >= SpApiClient.RETRY_BACKOFF_SECONDS.length
+            ? await this.getJsonDirect(item.url, 0, item.signal)
+            : await this.enqueue(item.url, item.group, item.signal, attempts));
+        } catch (err) { item.reject(err); }
         return;
       }
       if (part.status >= 400) {
@@ -562,8 +627,12 @@ export class SpApiClient {
       throw new Error(`HTTP ${resp.status} on $batch`);
     }
     if (!resp.ok) throw new Error(`HTTP ${resp.status} on $batch`);
-    this.noteSuccess();
-    return SpApiClient.parseBatchResponse(await resp.text());
+    const parts = SpApiClient.parseBatchResponse(await resp.text());
+    // A 200 envelope whose members came back throttled is not a success —
+    // counting it as one would undo the escalation sendBatch applies for
+    // those members, pinning the backoff at its first step.
+    if (!parts.some((p) => SpApiClient.isThrottleResponse(p.status))) this.noteSuccess();
+    return parts;
   }
 
   // Splits a multipart/mixed batch response into its inner HTTP responses.
@@ -583,11 +652,11 @@ export class SpApiClient {
     return out;
   }
 
-  public async getJsonDirect(url: string, attempt = 0): Promise<any> {
+  public async getJsonDirect(url: string, attempt = 0, signal?: AbortSignal): Promise<any> {
     // Both gates, in this order: wait out any tenant-wide throttle window
     // first, then take a slot from the global in-flight ceiling.
-    await this.waitOutThrottle();
-    await this.acquireSlot();
+    await this.waitOutThrottle(signal);
+    await this.acquireSlot(signal);
     // Counted after the gates, so it reflects requests actually sent, and once
     // per attempt — a retry IS another request as far as the tenant is
     // concerned, and hiding that would make the liveness signal lie.
@@ -603,7 +672,7 @@ export class SpApiClient {
       // fully occupied by requests that are only sleeping.
       this.releaseSlot();
     }
-    return this.classifyResponse(resp, url, attempt, () => this.getJsonDirect(url, attempt + 1));
+    return this.classifyResponse(resp, url, attempt, signal, () => this.getJsonDirect(url, attempt + 1, signal));
   }
 
   /**
@@ -619,9 +688,9 @@ export class SpApiClient {
    * SPFx's SPHttpClient supplies X-RequestDigest itself, so there's no digest
    * plumbing to get wrong.
    */
-  public async postJson(url: string, body: unknown, attempt = 0): Promise<any> {
-    await this.waitOutThrottle();
-    await this.acquireSlot();
+  public async postJson(url: string, body: unknown, attempt = 0, signal?: AbortSignal): Promise<any> {
+    await this.waitOutThrottle(signal);
+    await this.acquireSlot(signal);
     this._requestCount++;
     let resp;
     try {
@@ -636,7 +705,7 @@ export class SpApiClient {
     } finally {
       this.releaseSlot();
     }
-    return this.classifyResponse(resp, url, attempt, () => this.postJson(url, body, attempt + 1));
+    return this.classifyResponse(resp, url, attempt, signal, () => this.postJson(url, body, attempt + 1, signal));
   }
 
   // Shared response handling for getJsonDirect and postJson.
@@ -650,6 +719,7 @@ export class SpApiClient {
     resp: SPHttpClientResponse,
     url: string,
     attempt: number,
+    signal: AbortSignal | undefined,
     retry: () => Promise<any>,
   ): Promise<any> {
     if (SpApiClient.isThrottleResponse(resp.status)) {
@@ -666,6 +736,8 @@ export class SpApiClient {
       // Trip the shared gate even on the final attempt: other in-flight work
       // still benefits from backing off, whether or not THIS request retries.
       this.noteThrottled(waitSeconds);
+      // Canceled: stop here rather than spend up to 8 more attempts.
+      throwIfAborted(signal);
       if (attempt < SpApiClient.RETRY_BACKOFF_SECONDS.length) {
         // retry(), never getJsonDirect — otherwise a throttled POST would
         // quietly retry itself as a GET and lose its body.
@@ -705,6 +777,7 @@ export class SpApiClient {
         Math.min(attempt, SpApiClient.RETRY_BACKOFF_SECONDS.length - 1)
       ];
       this.noteThrottled(fallback);
+      throwIfAborted(signal);
       if (attempt < SpApiClient.RETRY_BACKOFF_SECONDS.length) {
         return retry();
       }
@@ -738,15 +811,29 @@ export class SpApiClient {
     // arguments, so this is source-compatible.
     onPage?: (fetchedSoFar: number, pageRows: any[], pagesDone: number) => void,
     group: BatchGroup = 'default',
+    // Converts each row as its page lands, so only the compact form is kept.
+    // Holding every raw row (with its expanded File object) until the caller
+    // mapped them all doubled peak memory on a several-hundred-thousand-item
+    // library.
+    mapRow?: (row: any) => any,
   ): Promise<{ items: any[]; truncated: boolean }> {
     const all: any[] = [];
     let next: string | undefined = url;
     let page = 0;
     for (; next && page < maxPages && !signal?.aborted; page++) {
-      const data = await this.getJson(next, skipBatch, group);
+      let data: any;
+      try {
+        data = await this.getJson(next, skipBatch, group, signal);
+      } catch (err) {
+        // Canceled mid-wait: keep the pages that already arrived, exactly as a
+        // cancel between pages always has.
+        if (signal?.aborted) break;
+        throw err;
+      }
       const pageRows = valueArray(data);
-      all.push(...pageRows);
-      onPage?.(all.length, pageRows, page + 1);
+      onPage?.(all.length + pageRows.length, pageRows, page + 1);
+      if (mapRow) for (const r of pageRows) all.push(mapRow(r));
+      else all.push(...pageRows);
       next = data?.['odata.nextLink'] ?? data?.['@odata.nextLink'] ?? data?.d?.__next;
     }
     const truncated = !!next && page >= maxPages;
@@ -768,8 +855,9 @@ export class SpApiClient {
     skipBatch = false,
     onPage?: (fetchedSoFar: number, pageRows: any[], pagesDone: number) => void,
     group: BatchGroup = 'default',
+    mapRow?: (row: any) => any,
   ): Promise<any[]> {
-    return (await this.getJsonPagedMeta(url, signal, maxPages, skipBatch, onPage, group)).items;
+    return (await this.getJsonPagedMeta(url, signal, maxPages, skipBatch, onPage, group, mapRow)).items;
   }
 
   public async runConcurrent<T>(

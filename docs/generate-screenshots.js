@@ -374,7 +374,7 @@ function reportHistoryPage() {
     <div style="display:flex;align-items:center;gap:10px;padding:6px 0;">
       <span class="checkbox"><span class="box${s.checked ? ' checked' : ''}"></span></span>
       <span style="min-width:160px;font-size:13px;">${s.date}</span>
-      <span style="background:#e8f2fc;color:${BRAND};font-size:11.5px;font-weight:600;padding:2px 8px;border-radius:10px;">${s.size}</span>
+      <span style="background:#e8f2fc;color:${BRAND};font-size:11.5px;font-weight:600;padding:2px 8px;border-radius:10px;">${s.size} current files</span>
       <span style="background:#fdf1e0;color:#8a6100;font-size:11.5px;font-weight:600;padding:2px 8px;border-radius:10px;">${s.stale} stale</span>
       ${s.noFileList ? noFileListBadge : ''}
       <button class="btn" style="padding:4px 10px;font-size:12px;">View</button>

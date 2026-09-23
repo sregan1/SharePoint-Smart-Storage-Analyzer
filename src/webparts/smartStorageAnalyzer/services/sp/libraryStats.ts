@@ -92,7 +92,15 @@ export async function getLibraryRollups(
   libraries: LibraryInfo[],
   options?: WalkOptions,
 ): Promise<LibraryRollup[]> {
-  let sweptItems = 0;
+  // Latest running total per library, summed on demand. The sweep reports a
+  // cumulative count for its library each page, so adding it on every page
+  // (as this once did) inflated a 200,000-item library to ~4 million.
+  const sweptByLibrary = new Map<string, number>();
+  const totalSwept = (): number => {
+    let sum = 0;
+    sweptByLibrary.forEach((n) => { sum += n; });
+    return sum;
+  };
 
   const tasks = libraries.map((library) => async (): Promise<LibraryRollup> => {
     if (options?.signal?.aborted) {
@@ -113,10 +121,18 @@ export async function getLibraryRollups(
     const metrics = library.isRecycleBin
       ? undefined
       : await getStorageMetrics(client, siteUrl, library.serverRelativeUrl);
-    if (metrics && metrics.totalSizeBytes > 0) {
+    // Current content only (TotalFileStreamSize), the same basis as a swept
+    // library's total and every folder inside it. TotalSize includes version
+    // history, so tiles sized from it weren't comparable with swept ones and
+    // didn't match the folder totals shown after drilling in. Falls back to
+    // TotalSize only when that's the one figure the endpoint returned.
+    const contentBytes = metrics
+      ? (metrics.totalFileStreamSizeBytes ?? metrics.totalSizeBytes)
+      : 0;
+    if (metrics && contentBytes > 0) {
       return {
         library,
-        totalSizeBytes: metrics.totalSizeBytes,
+        totalSizeBytes: contentBytes,
         fileCount: metrics.fileCount,
         lastModified: metrics.lastModified ?? library.lastModified,
         sizeUnknown: false,
@@ -138,8 +154,8 @@ export async function getLibraryRollups(
         // Several libraries can be sweeping at once, so report a combined
         // running total rather than letting each one reset the counter.
         onWalkProgress: (n) => {
-          sweptItems += n;
-          options?.onWalkProgress?.(sweptItems);
+          sweptByLibrary.set(library.serverRelativeUrl, n);
+          options?.onWalkProgress?.(totalSwept());
         },
       });
       const root = aggregate.root;

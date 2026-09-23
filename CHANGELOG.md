@@ -4,17 +4,111 @@ All notable changes to this project are documented here.
 
 ---
 
-## [1.3.1] — 2026-09-22
+## [1.3.1] — 2026-09-23
+
+### Added
+
+- **Total Storage Size everywhere sizes are shown**
+  Current File Size plus Version History Size, shown first: as a highlighted summary tile in the
+  Storage Report, as the first size column in the List View, in the List View's Excel/CSV export,
+  in the Storage Report's Excel Summary sheet, and as a badge on saved scans. Shown only when
+  version history was measured, since otherwise it would just repeat Current File Size.
+
+- **Dark theme support**
+  The web part now follows a dark (inverted) page section or theme variant instead of always
+  rendering light.
 
 ### Changed
 
 - **Renamed the three storage-size labels used throughout the app for clarity**
   What was labeled **"Size"** / **"Total size"** is now **"Current File Size"** (current files,
   excluding version history). What was labeled **"Version history"** / **"Version History"** is
-  now **"Version History Size"** (version history only). The combined figure used to size Treemap
-  file squares when version history is included is now called **"Total Storage Size"** (current
-  files plus version history). Updated in Tree View, List View, Storage Report (tiles, table
-  columns, checkboxes), Excel/CSV export, and the Treemap tooltip.
+  now **"Version History Size"** (version history only). The combined figure is **"Total
+  Storage Size"**. Updated in Tree View, List View, Storage Report, Excel/CSV export, and the
+  Treemap tooltip.
+
+- **Storage Report summary regrouped**
+  Size tiles come first (Total Storage Size, Current File Size, Version History Size), then Files
+  scanned, Stale, and Very stale. The Excel Summary sheet uses the same grouping, with blank rows
+  between groups.
+
+- **"Include Version History Size" is now one shared, remembered setting**
+  One setting covers Tree View, List View, and the Storage Report — check it on either screen and
+  it's checked everywhere, and your choice is remembered across sessions. Still off by default:
+  measuring version history is real extra work, so this keeps browsing and scanning fast unless
+  you ask for the true total-storage number.
+
+- **Incomplete version-history totals are marked "≥"**
+  When some files' version history couldn't be measured, Version History Size and Total Storage
+  Size show "≥" (a floor) in the tiles, saved-scan badges, and Excel Summary sheet. The List View
+  and its exports mark partially measured folders "≥" and unmeasured folders "Unknown".
+
+- **List View pages large folders** 200 rows at a time, and its exports use the same column order
+  as the on-screen table.
+
+- **The "Include Version History Size" checkbox is now visible from the moment you open Tree
+  View or List View**, not only after opening a library — it has no effect on the site-root
+  screen (library sizes never include version history), but it's the setting that decides what
+  happens the instant you drill into one, so it's no longer hidden while that's the only thing on
+  screen.
+
+- **Deleting a saved scan asks for confirmation.**
+
+- **Accessibility:** every treemap square can be reached with the keyboard, and file squares show
+  their archival status as text as well as color; treemap and header text switches between black
+  and white for contrast on any background; info icons are keyboard-focusable; sortable table
+  headers announce their sort order to screen readers; saved-scan checkboxes and delete buttons
+  have labels; disabled Home cards stay readable and their buttons explain why they're disabled.
+
+### Fixed
+
+- **Version Count could read 0 on a library with minor/draft versioning enabled**, even when
+  Version History Size correctly showed real storage for the same files. The count is measured
+  exactly only when a library needs per-file measurement; on the common bulk-measured path it was
+  estimated from the file's version label, and that estimate counted only major versions — so a
+  label like "1.3" (three retained minor versions) read as zero. It now counts major and minor
+  versions together.
+- **Tree/List View could get stuck loading** when you switched folders before the previous one
+  finished; a late reply for the old folder left the new one's loading bar spinning.
+- **Leaving the Storage Report mid-scan** now cancels the scan instead of letting it run on in the
+  background.
+- **Viewing a saved scan during a live scan** no longer labels the live results as that saved scan
+  (its thresholds, site, and export site URL).
+- **Version columns no longer appear at the "All libraries" level** of the List View.
+- **The Storage Report results table** now follows what the scan measured, rather than the
+  checkbox changed afterward.
+- **Cancel now stops promptly** even while waiting out SharePoint throttling or retrying.
+- **The item counter on the opening screen** no longer inflates (it re-added running totals each
+  page, so a 200,000-item library showed about 4 million).
+- **Libraries where no file has old versions** no longer trigger a pointless full version-history
+  read, which could also mislabel them as unmeasured.
+- **Throttled requests inside a batch** now wait out the throttle before being resent, instead of
+  being resent immediately one by one.
+- **The web part no longer fails to load when browser storage is blocked** (Teams, strict privacy
+  settings); settings just aren't remembered in that case.
+- **Web part startup:** rendering is guarded until initialization finishes, and theme changes use
+  the built-in lifecycle hook (the previous listener was never removed).
+- **A render error in one screen** now shows a message with a "Back to Home" button instead of
+  replacing the whole web part.
+- **Recycle Bin paging** skips duplicate rows, so sizes can't be counted twice.
+- **Site-root library sizes** now use current content only, matching the folder totals inside
+  each library.
+- **Authors past the first 5,000 site users** are no longer blank.
+- **Saving scan history when storage is full** frees older listings one at a time until the new
+  one fits, and no longer deletes them when the failure wasn't about space.
+- **The "Default view on open" property pane field** now uses SPFx's standard dropdown control
+  instead of a hand-built one that relied on an internal, undocumented field-type number.
+
+### Performance
+
+- Opening a library reads it once instead of twice; the Explorer keeps recently opened libraries
+  in memory up to about 500,000 items in total (instead of every library ever opened); library
+  reads keep a compact copy of each item instead of the raw response.
+- Saved scans store their file listing in pieces, so a very large report no longer has to be
+  written (or read back) as one huge record.
+- Result tables no longer re-sort every row on unrelated clicks.
+- A scan fetches the site user list once rather than once per subsite, and discovers subsites in
+  parallel.
 
 ---
 

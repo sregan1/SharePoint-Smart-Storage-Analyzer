@@ -4,6 +4,7 @@ import { CandidateTier, TreemapItem, TreemapRect } from '../../models/models';
 import { layoutTreemap } from '../../utils/treemapLayout';
 import { FOLDER_COLOR, OTHER_COLOR, TIER_COLORS, tierLabel } from './tierBadge';
 import { formatBytes, formatAge } from './formatBytes';
+import { readableTextOn } from './readableText';
 
 // Diagonal stripes (rather than a solid fill) for a folder whose size
 // couldn't be determined — visually distinct at a glance from a genuinely
@@ -89,13 +90,22 @@ export const Treemap: React.FC<TreemapProps> = ({ items, height = 420, onFolderC
       {rects.map((r) => {
         const clickable = r.kind === 'folder';
         const showLabel = r.width > 44 && r.height > 20;
-        const showDetail = showLabel && r.height > 36 && (r.kind === 'folder' || r.versionSizeBytes != null);
+        const showDetail = showLabel && r.height > 36;
+        const background = cellColor(r);
+        // Black or white per cell: white text on the amber Stale color was
+        // ~1.8:1. The striped unknown-size pattern is dark, so white.
+        const textColor = r.kind === 'folder' && r.sizeUnknown ? '#ffffff' : readableTextOn(background);
+        const textShadow = textColor === '#ffffff' ? '0 1px 2px rgba(0,0,0,0.6)' : 'none';
+        const tierText = r.kind === 'file' ? tierLabel(r.tier ?? CandidateTier.Active) : '';
         const cell = (
           <div
             key={r.id}
             onClick={clickable ? () => onFolderClick(r) : undefined}
-            role={clickable ? 'button' : undefined}
-            tabIndex={clickable ? 0 : undefined}
+            // Every cell is focusable so a file's size, tier and age (otherwise
+            // only in the hover tooltip) are reachable by keyboard; the Tooltip
+            // supplies the accessible name.
+            role={clickable ? 'button' : 'img'}
+            tabIndex={0}
             onKeyDown={clickable ? (e) => {
               if (e.key === 'Enter' || e.key === ' ') {
                 e.preventDefault();
@@ -108,7 +118,7 @@ export const Treemap: React.FC<TreemapProps> = ({ items, height = 420, onFolderC
               top: `${r.y + 1}px`,
               width: `${Math.max(0, r.width - 2)}px`,
               height: `${Math.max(0, r.height - 2)}px`,
-              background: cellColor(r),
+              background,
               border: `1px solid ${tokens.colorNeutralBackground2}`,
               boxSizing: 'border-box',
               overflow: 'hidden',
@@ -122,9 +132,9 @@ export const Treemap: React.FC<TreemapProps> = ({ items, height = 420, onFolderC
             {showLabel && (
               <Text
                 style={{
-                  color: 'white',
+                  color: textColor,
                   fontSize: tokens.fontSizeBase200,
-                  textShadow: '0 1px 2px rgba(0,0,0,0.6)',
+                  textShadow,
                   overflow: 'hidden',
                   textOverflow: 'ellipsis',
                   whiteSpace: 'nowrap',
@@ -137,21 +147,26 @@ export const Treemap: React.FC<TreemapProps> = ({ items, height = 420, onFolderC
             {showDetail && (
               <Text
                 style={{
-                  color: 'white',
+                  color: textColor,
                   fontSize: tokens.fontSizeBase100,
-                  textShadow: '0 1px 2px rgba(0,0,0,0.6)',
+                  textShadow,
                   overflow: 'hidden',
                   textOverflow: 'ellipsis',
                   whiteSpace: 'nowrap',
                   width: '100%',
-                  opacity: 0.85,
+                  opacity: 0.9,
                 }}
               >
                 {r.kind === 'folder'
                   ? (r.sizeUnknown
                     ? 'Size unknown'
                     : `${r.sizeApproximate ? '≥ ' : ''}${formatBytes(r.sizeBytes)}${r.itemCount != null ? ` · ${r.itemCount} file${r.itemCount === 1 ? '' : 's'}` : ''}`)
-                  : `${formatBytes(r.sizeBytes - (r.versionSizeBytes ?? 0))} + ${formatBytes(r.versionSizeBytes ?? 0)} history`}
+                  : r.kind === 'other'
+                    ? `${formatBytes(r.sizeBytes)} combined`
+                    // The tier as text, not only as the cell's color.
+                    : r.versionSizeBytes != null
+                      ? `${tierText} · ${formatBytes(r.sizeBytes - r.versionSizeBytes)} + ${formatBytes(r.versionSizeBytes)} history`
+                      : `${tierText} · ${formatBytes(r.sizeBytes)}`}
               </Text>
             )}
           </div>

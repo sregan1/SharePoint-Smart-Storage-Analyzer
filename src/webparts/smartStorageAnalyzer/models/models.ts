@@ -275,7 +275,7 @@ export interface StoredReportMeta {
   listingEvicted?: boolean;
 }
 
-// Meta plus the listing. Only materialised when a listing is actually loaded.
+// Meta plus the listing. Only materialized when a listing is actually loaded.
 export interface StoredReport extends StoredReportMeta {
   entries: FileEntry[];
 }

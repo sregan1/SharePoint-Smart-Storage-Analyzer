@@ -1,5 +1,5 @@
 import * as React from 'react';
-import { makeStyles, tokens, Button, Text } from '@fluentui/react-components';
+import { makeStyles, shorthands, tokens, Button, Text } from '@fluentui/react-components';
 import { ChevronDown16Regular, ChevronRight16Regular } from '@fluentui/react-icons';
 
 const useStyles = makeStyles({
@@ -24,6 +24,28 @@ const useStyles = makeStyles({
   },
   thStatic: {
     cursor: 'default',
+  },
+  // A real <button> inside the <th> keeps the cell's columnheader role (so
+  // screen readers announce aria-sort) while still being keyboard-operable.
+  sortButton: {
+    backgroundColor: 'transparent',
+    ...shorthands.borderStyle('none'),
+    padding: '0',
+    margin: '0',
+    fontFamily: 'inherit',
+    fontSize: 'inherit',
+    fontWeight: 'inherit',
+    color: 'inherit',
+    textAlign: 'inherit',
+    display: 'inline-flex',
+    alignItems: 'center',
+    gap: '2px',
+    cursor: 'pointer',
+    borderRadius: tokens.borderRadiusSmall,
+    ':focus-visible': {
+      outline: `2px solid ${tokens.colorStrokeFocus2}`,
+      outlineOffset: '2px',
+    },
   },
   td: {
     padding: '5px 8px',
@@ -56,6 +78,10 @@ export interface StorageTableProps<T> {
   pageSize?: number;
 }
 
+// Shared rather than per-comparison localeCompare, which re-resolves locale
+// data on every call. numeric:true sorts "File 2" before "File 10".
+const collator = new Intl.Collator(undefined, { numeric: true, sensitivity: 'base' });
+
 // Generic hand-rolled sortable table (sticky header, click-to-sort columns)
 // reused by the Library Overview list and the Storage Report / file-list
 // results — deliberately not Fluent's DataGrid, to stay consistent with the
@@ -68,18 +94,30 @@ export function StorageTable<T>({
   const [sortDir, setSortDir] = React.useState<'asc' | 'desc'>(defaultSortDir);
   const [page, setPage] = React.useState(0);
 
+  // Parents rebuild `columns` on every render, so depending on it here re-sorted
+  // the whole array on any unrelated state change — on a 190,000-row report,
+  // that was every checkbox click and spinner flip. A column's sortValue is
+  // fixed for its key, so the latest one is read through a ref instead.
+  const columnsRef = React.useRef(columns);
+  columnsRef.current = columns;
+  const sortColumnPresent = columns.some((c) => c.key === sortKey && !!c.sortValue);
+
   const sorted = React.useMemo(() => {
-    const col = columns.find((c) => c.key === sortKey);
+    const col = columnsRef.current.find((c) => c.key === sortKey);
     if (!col?.sortValue) return rows;
-    const copy = [...rows];
-    copy.sort((a, b) => {
-      const av = col.sortValue!(a);
-      const bv = col.sortValue!(b);
-      const cmp = typeof av === 'number' && typeof bv === 'number' ? av - bv : String(av).localeCompare(String(bv));
-      return sortDir === 'asc' ? cmp : -cmp;
+    // Each row's key computed once rather than twice per comparison.
+    const keyed = rows.map((row) => ({ row, v: col.sortValue!(row) }));
+    const dir = sortDir === 'asc' ? 1 : -1;
+    keyed.sort((a, b) => {
+      const av = a.v;
+      const bv = b.v;
+      const cmp = typeof av === 'number' && typeof bv === 'number'
+        ? av - bv
+        : collator.compare(String(av), String(bv));
+      return cmp * dir;
     });
-    return copy;
-  }, [rows, columns, sortKey, sortDir]);
+    return keyed.map((k) => k.row);
+  }, [rows, sortKey, sortDir, sortColumnPresent]);
 
   // Reset to page 1 whenever the data or sort changes — otherwise re-scanning,
   // re-sorting, or toggling a filter (which swaps `rows` for a shorter array)
@@ -108,23 +146,19 @@ export function StorageTable<T>({
           {columns.map((col) => (
             <th
               key={col.key}
+              scope="col"
               className={`${styles.th}${col.sortValue ? '' : ` ${styles.thStatic}`}`}
               style={{ textAlign: col.align ?? 'left' }}
-              onClick={() => handleHeaderClick(col)}
-              role={col.sortValue ? 'button' : undefined}
-              tabIndex={col.sortValue ? 0 : undefined}
-              onKeyDown={col.sortValue ? (e) => {
-                if (e.key === 'Enter' || e.key === ' ') {
-                  e.preventDefault();
-                  handleHeaderClick(col);
-                }
-              } : undefined}
               aria-sort={col.sortValue ? (sortKey === col.key ? (sortDir === 'asc' ? 'ascending' : 'descending') : 'none') : undefined}
             >
-              <span style={{ display: 'inline-flex', alignItems: 'center', gap: '2px' }}>
-                {col.header}
-                {sortKey === col.key && (sortDir === 'asc' ? <ChevronRight16Regular style={{ transform: 'rotate(-90deg)' }} /> : <ChevronDown16Regular />)}
-              </span>
+              {col.sortValue ? (
+                <button type="button" className={styles.sortButton} onClick={() => handleHeaderClick(col)}>
+                  {col.header}
+                  {sortKey === col.key && (sortDir === 'asc' ? <ChevronRight16Regular style={{ transform: 'rotate(-90deg)' }} /> : <ChevronDown16Regular />)}
+                </button>
+              ) : (
+                <span style={{ display: 'inline-flex', alignItems: 'center', gap: '2px' }}>{col.header}</span>
+              )}
             </th>
           ))}
         </tr>

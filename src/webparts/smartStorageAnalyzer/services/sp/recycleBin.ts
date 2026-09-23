@@ -112,7 +112,7 @@ export interface FetchRecycleBinOptions {
 
 function pageUrl(siteUrl: string, skip: number): string {
   return `${siteUrl}/_api/web/RecycleBin`
-    + '?$select=LeafName,Title,DirName,ItemType,Size,DeletedDate,DeletedByTitle,DeletedByEmail'
+    + '?$select=Id,LeafName,Title,DirName,ItemType,Size,DeletedDate,DeletedByTitle,DeletedByEmail'
     + `&$orderby=Id asc&$top=${ITEMS_PAGE_SIZE}&$skip=${skip}`;
 }
 
@@ -128,6 +128,11 @@ export async function fetchRecycleBinItems(
   options?: FetchRecycleBinOptions,
 ): Promise<FlatItem[]> {
   const items: FlatItem[] = [];
+  // Skip-based paging has no consistency guarantee: a tenant that ignores
+  // $skip returns the same page again, and items deleted or restored during
+  // the read shift everything after them. Ids seen before are dropped so
+  // nothing is counted twice, and a page with nothing new ends the loop.
+  const seenIds = new Set<string>();
   let fetched = 0;
   let next: string | undefined = pageUrl(siteUrl, 0);
   let skip = 0;
@@ -138,17 +143,26 @@ export async function fetchRecycleBinItems(
     try {
       // skipBatch: a 5,000-row page is the wrong shape to coalesce with
       // small requests — see SpApiClient.getJson.
-      data = await client.getJson(next, true);
+      data = await client.getJson(next, true, 'default', options?.signal);
     } catch (err: any) {
+      if (options?.signal?.aborted) break; // canceled: keep what arrived
       throw new LibraryFetchError(RECYCLE_BIN_TITLE, err?.message ?? String(err));
     }
     const rows = valueArray(data);
+    let fresh = 0;
     for (const row of rows) {
+      const id = row.Id != null ? String(row.Id) : undefined;
+      if (id !== undefined) {
+        if (seenIds.has(id)) continue;
+        seenIds.add(id);
+      }
+      fresh++;
       const item = toFlatItem(siteUrl, row);
       if (item) items.push(item);
     }
-    fetched += rows.length;
+    fetched += fresh;
     options?.onProgress?.(fetched);
+    if (rows.length > 0 && fresh === 0) break;
 
     // Prefer a server-provided token if a tenant happens to return one;
     // otherwise fall back to advancing our own $skip. Either way, a short
