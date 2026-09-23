@@ -178,7 +178,7 @@ function explorerTreemapPage() {
       <div style="padding:8px 16px;font-size:13px;color:${NEUTRAL.text2};">List</div>
     </div>
     <div style="display:flex;align-items:center;gap:6px;margin-bottom:4px;">
-      <span class="checkbox"><span class="box"></span>Include version history size</span>
+      <span class="checkbox"><span class="box"></span>Include Version History Size</span>
       ${icon(INFO_SVG, 14, NEUTRAL.text3)}
     </div>
     ${tierLegend(true)}
@@ -195,20 +195,21 @@ function explorerTreemapPage() {
 // ── 2. Explorer — List view ──────────────────────────────────────────────────
 function explorerListPage() {
   const rows = [
-    { icon: 'folder', name: 'Projects', size: '4.2 GB', items: '1,204', vh: '', vc: '', mod: '7/1/2026', status: null },
-    { icon: 'folder', name: 'Archive', size: '2.8 GB', items: '890', vh: '', vc: '', mod: '6/2/2026', status: null },
-    { icon: 'doc', name: 'Video-Raw-Footage.mp4', size: '1.9 GB', items: '', vh: '210 MB', vc: '6', mod: '3/14/2025', status: 'veryStale' },
-    { icon: 'folder', name: 'Old Reports', size: '1.1 GB', items: '210', vh: '', vc: '', mod: '1/9/2025', status: null },
-    { icon: 'folder', name: 'Templates', size: '340 MB', items: '156', vh: '', vc: '', mod: '6/28/2026', status: null },
-    { icon: 'doc', name: 'Vendor-Contracts.zip', size: '210 MB', items: '', vh: '38 MB', vc: '3', mod: '9/2/2025', status: 'stale' },
-    { icon: 'doc', name: 'Q4-Budget.xlsx', size: '18 MB', items: '', vh: '54 MB', vc: '22', mod: '11/20/2025', status: 'stale' },
-    { icon: 'doc', name: 'Brand-Guidelines.pdf', size: '9 MB', items: '', vh: '4 MB', vc: '2', mod: '6/30/2026', status: 'active' },
+    { icon: 'folder', name: 'Projects', total: '4.2 GB', size: '4.2 GB', items: '1,204', vh: '', vc: '', mod: '7/1/2026', status: null },
+    { icon: 'folder', name: 'Archive', total: '2.8 GB', size: '2.8 GB', items: '890', vh: '', vc: '', mod: '6/2/2026', status: null },
+    { icon: 'doc', name: 'Video-Raw-Footage.mp4', total: '2.1 GB', size: '1.9 GB', items: '', vh: '210 MB', vc: '6', mod: '3/14/2025', status: 'veryStale' },
+    { icon: 'folder', name: 'Old Reports', total: '1.1 GB', size: '1.1 GB', items: '210', vh: '', vc: '', mod: '1/9/2025', status: null },
+    { icon: 'folder', name: 'Templates', total: '340 MB', size: '340 MB', items: '156', vh: '', vc: '', mod: '6/28/2026', status: null },
+    { icon: 'doc', name: 'Vendor-Contracts.zip', total: '248 MB', size: '210 MB', items: '', vh: '38 MB', vc: '3', mod: '9/2/2025', status: 'stale' },
+    { icon: 'doc', name: 'Q4-Budget.xlsx', total: '72 MB', size: '18 MB', items: '', vh: '54 MB', vc: '22', mod: '11/20/2025', status: 'stale' },
+    { icon: 'doc', name: 'Brand-Guidelines.pdf', total: '13 MB', size: '9 MB', items: '', vh: '4 MB', vc: '2', mod: '6/30/2026', status: 'active' },
   ];
   const statusDot = (s) => s ? `<span style="display:inline-flex;align-items:center;gap:5px;"><span style="width:8px;height:8px;border-radius:50%;background:${TIER[s]};display:inline-block;"></span>${s === 'veryStale' ? 'Very stale' : s === 'stale' ? 'Stale' : 'Active'}</span>` : '<span style="color:#c8c6c4;">—</span>';
   const dash = (v) => v || '<span style="color:#c8c6c4;">—</span>';
   const rowsHtml = rows.map((r) => `
     <tr>
       <td><div style="display:flex;align-items:center;gap:6px;">${icon(r.icon === 'folder' ? FOLDER_SVG : DOC_SVG, 14, r.icon === 'folder' ? BRAND : NEUTRAL.text2)}<span>${r.name}</span></div></td>
+      <td style="text-align:right;">${r.total}</td>
       <td style="text-align:right;">${r.size}</td>
       <td style="text-align:right;">${r.items || ''}</td>
       <td style="text-align:right;">${dash(r.vh)}</td>
@@ -234,7 +235,7 @@ function explorerListPage() {
       <div style="padding:8px 16px;font-size:13px;font-weight:600;color:${BRAND};border-bottom:2px solid ${BRAND};margin-bottom:-1px;">List</div>
     </div>
     <div style="display:flex;align-items:center;gap:6px;margin-bottom:12px;">
-      <span class="checkbox"><span class="box checked"></span>Include version history size</span>
+      <span class="checkbox"><span class="box checked"></span>Include Version History Size</span>
       ${icon(INFO_SVG, 14, NEUTRAL.text3)}
     </div>
     <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;margin-bottom:8px;">
@@ -245,7 +246,7 @@ function explorerListPage() {
       </div>
     </div>
     <table style="background:#fff;">
-      <thead><tr><th>Name</th><th style="text-align:right;">Size</th><th style="text-align:right;">Items</th><th style="text-align:right;">Version History</th><th style="text-align:right;">Version Count</th><th>Modified</th><th>Status</th></tr></thead>
+      <thead><tr><th>Name</th><th style="text-align:right;">Total Storage Size</th><th style="text-align:right;">Current File Size</th><th style="text-align:right;">Items</th><th style="text-align:right;">Version History Size</th><th style="text-align:right;">Version Count</th><th>Modified</th><th>Status</th></tr></thead>
       <tbody>${rowsHtml}</tbody>
     </table>`;
   return pageShell(body, {});
@@ -261,7 +262,7 @@ function reportConfigPage() {
     <div style="display:flex;align-items:center;gap:16px;flex-wrap:wrap;">
       <span class="checkbox"><span class="box"></span>Include subsites</span>
       <span class="checkbox"><span class="box"></span>Include hidden/system libraries</span>
-      <span class="checkbox"><span class="box"></span>Include version history size</span>
+      <span class="checkbox"><span class="box"></span>Include Version History Size</span>
       <button class="btn primary">Run scan</button>
     </div>`;
   return pageShell(body, { maxWidth: '1100px' });
@@ -277,7 +278,7 @@ function reportRunningPage() {
     <div style="display:flex;align-items:center;gap:16px;flex-wrap:wrap;margin-bottom:24px;">
       <span class="checkbox"><span class="box checked"></span>Include subsites</span>
       <span class="checkbox"><span class="box"></span>Include hidden/system libraries</span>
-      <span class="checkbox"><span class="box"></span>Include version history size</span>
+      <span class="checkbox"><span class="box"></span>Include Version History Size</span>
       <button class="btn primary" style="opacity:0.6;">Scanning…</button>
       <button class="btn">Cancel</button>
     </div>
@@ -301,10 +302,10 @@ function reportRunningPage() {
 
 // ── 5. Storage Report — results ──────────────────────────────────────────────
 function reportResultsPage() {
-  const tile = (label, value, withInfo) => `
-    <div style="background:${NEUTRAL.tileBg};border-radius:4px;padding:14px 16px;">
+  const tile = (label, value, withInfo, accent) => `
+    <div style="background:${accent ? '#e8f2fc' : NEUTRAL.tileBg};border:${accent ? `1px solid ${BRAND}` : '1px solid transparent'};border-radius:4px;padding:14px 16px;flex:1 1 140px;">
       <div style="font-size:12px;color:${NEUTRAL.text2};display:flex;align-items:center;gap:5px;">${label}${withInfo ? icon(INFO_SVG, 13, NEUTRAL.text3) : ''}</div>
-      <div style="font-size:22px;font-weight:600;margin-top:2px;">${value}</div>
+      <div style="font-size:${accent ? 24 : 22}px;font-weight:${accent ? 700 : 600};margin-top:2px;color:${accent ? BRAND : NEUTRAL.text1};">${value}</div>
     </div>`;
   const rows = [
     ['Campaign Archive', 'Q3-Launch-Master.mov', '2.4 GB', '3/2/2025', 'A. Rivera', 'veryStale'],
@@ -333,11 +334,15 @@ function reportResultsPage() {
     <div style="display:flex;align-items:center;gap:16px;flex-wrap:wrap;margin-bottom:24px;">
       <span class="checkbox"><span class="box checked"></span>Include subsites</span>
       <span class="checkbox"><span class="box"></span>Include hidden/system libraries</span>
-      <span class="checkbox"><span class="box"></span>Include version history size</span>
+      <span class="checkbox"><span class="box checked"></span>Include Version History Size</span>
       <button class="btn primary">Run scan</button>
     </div>
-    <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:16px;margin-bottom:24px;">
-      ${tile('Total size', '18.6 GB', true)}
+    <div style="display:flex;align-items:stretch;gap:8px;flex-wrap:wrap;margin-bottom:16px;">
+      ${tile('Total Storage Size', '21.4 GB', true, true)}
+      ${tile('Current File Size', '18.6 GB', true)}
+      ${tile('Version History Size', '2.8 GB', true)}
+    </div>
+    <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:16px;margin-bottom:24px;">
       ${tile('Files scanned', '8,412')}
       ${tile('Stale (2.1 GB)', '412')}
       ${tile('Very stale (4.3 GB)', '96')}
@@ -349,7 +354,7 @@ function reportResultsPage() {
     </div>
     ${tierLegend(false)}
     <table style="background:#fff;">
-      <thead><tr><th>Library</th><th>Name</th><th style="text-align:right;">Size</th><th>Modified</th><th>Author</th><th>Status</th></tr></thead>
+      <thead><tr><th>Library</th><th>Name</th><th style="text-align:right;">Current File Size</th><th>Modified</th><th>Author</th><th>Status</th></tr></thead>
       <tbody>${rowsHtml}</tbody>
     </table>`;
   return pageShell(body, { maxWidth: '1100px' });

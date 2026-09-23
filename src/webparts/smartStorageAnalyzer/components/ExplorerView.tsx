@@ -26,6 +26,7 @@ import { StorageTable, StorageTableColumn } from './shared/StorageTable';
 import { SizeBar } from './shared/SizeBar';
 import { formatBytes, formatAge } from './shared/formatBytes';
 import { tierColor, tierLabel } from './shared/tierBadge';
+import { useIncludeVersionHistory } from './shared/useIncludeVersionHistory';
 import { ageInDays, classify } from '../utils/archivalClassification';
 
 const useStyles = makeStyles({
@@ -124,7 +125,9 @@ export const ExplorerView: React.FC<ExplorerViewProps> = ({
   const [selectedFiles, setSelectedFiles] = React.useState<FolderFileRow[]>([]);
   const [filesLoading, setFilesLoading] = React.useState(false);
   const filesCache = React.useRef<Map<string, RawFolderFile[]>>(new Map());
-  const [includeVersions, setIncludeVersions] = React.useState(false);
+  // Shared with Storage Report — see useIncludeVersionHistory. One preference,
+  // synced and sticky across every screen, not a per-view default.
+  const [includeVersions, setIncludeVersions] = useIncludeVersionHistory();
   // Which files request the current selectedFiles actually belong to. Compared
   // against the live key below to answer "are the files on screen the ones for
   // the folder now selected?" — a plain `filesLoading` flag can't, because it
@@ -642,9 +645,49 @@ export const ExplorerView: React.FC<ExplorerViewProps> = ({
         </span>
       )),
     },
+    // Folders have no recursive version-history rollup (see the Version
+    // History Size column below), so a folder's total is always just its
+    // Current File Size — this column only adds real information for files.
+    ...(includeVersions ? [{
+      key: 'totalSize',
+      header: 'Total Storage Size',
+      align: 'right' as const,
+      sortValue: (r: FolderListRow) => (
+        r.sizeUnknown ? -1 : r.sizeBytes + (r.kind === 'file' ? (r.versionSizeBytes ?? 0) : 0)
+      ),
+      render: (r: FolderListRow) => {
+        if (r.sizeUnknown) {
+          return (
+            <Tooltip content={r.sizeErrorMessage ?? 'Size could not be determined, and no error detail was recorded. Not a confirmed empty folder.'} relationship="label">
+              <span style={{ display: 'inline-flex', alignItems: 'center', gap: '4px', color: tokens.colorPaletteMarigoldForeground1, cursor: 'help' }}>
+                <Warning16Regular /> Unknown
+              </span>
+            </Tooltip>
+          );
+        }
+        if (r.kind === 'folder') {
+          return r.sizeApproximate ? (
+            <Tooltip content="At least this much. Measurement was stopped before this folder's subtree was fully counted — open the folder to measure it directly, or use Refresh to measure again." relationship="label">
+              <span style={{ cursor: 'help' }}>≥ {formatBytes(r.sizeBytes)}</span>
+            </Tooltip>
+          ) : <span>{formatBytes(r.sizeBytes)}</span>;
+        }
+        // File: real total once version history is measured; otherwise a
+        // floor (current content only) rather than a silent understatement,
+        // since the unmeasured version history is real storage this figure
+        // is missing.
+        return r.versionSizeBytes !== undefined ? (
+          <span>{formatBytes(r.sizeBytes + r.versionSizeBytes)}</span>
+        ) : (
+          <Tooltip content="This file's version history could not be measured, so this total is a floor — current file content only." relationship="label">
+            <span style={{ cursor: 'help' }}>≥ {formatBytes(r.sizeBytes)}</span>
+          </Tooltip>
+        );
+      },
+    }] : []),
     {
       key: 'size',
-      header: 'Size',
+      header: 'Current File Size',
       align: 'right',
       // Sort unknown-size folders as smallest rather than 0 — a confirmed
       // empty folder and an unmeasurable one shouldn't be indistinguishable
@@ -682,7 +725,7 @@ export const ExplorerView: React.FC<ExplorerViewProps> = ({
       // rollup (StorageMetrics / live walk) has no recursive version-history
       // total, so a folder's Size never includes it. Only individual files
       // get a real number here; folders always show '—'.
-      header: 'Version history (files only)',
+      header: 'Version History Size (files only)',
       align: 'right' as const,
       sortValue: (r: FolderListRow) => r.versionSizeBytes ?? -1,
       render: (r: FolderListRow) => <span>{r.kind === 'file' && r.versionSizeBytes !== undefined ? formatBytes(r.versionSizeBytes) : '—'}</span>,
@@ -959,12 +1002,12 @@ export const ExplorerView: React.FC<ExplorerViewProps> = ({
             {!atRoot && (
               <div style={{ display: 'flex', alignItems: 'center', gap: tokens.spacingHorizontalXS }}>
                 <Checkbox
-                  label="Include version history size"
+                  label="Include Version History Size"
                   checked={includeVersions}
                   onChange={(_, d) => setIncludeVersions(!!d.checked)}
                 />
                 <Tooltip
-                  content="Only individual files get a real version-history number — SharePoint's folder size rollup has no recursive version-history total, so a folder's Size never includes its files' version history, on or off. Version History Size is exact; Version Count is an estimate based on the file's current version number, so it can run slightly high (never low) on a library with a configured version-retention limit."
+                  content="Only individual files get a real version-history number — SharePoint's folder size rollup has no recursive version-history total, so a folder's Current File Size never includes its files' version history, on or off. Version History Size is exact; Version Count is an estimate based on the file's current version number, so it can run slightly high (never low) on a library with a configured version-retention limit."
                   relationship="label"
                 >
                   <Info16Regular style={{ cursor: 'help', color: tokens.colorNeutralForeground3 }} />
@@ -1004,7 +1047,7 @@ export const ExplorerView: React.FC<ExplorerViewProps> = ({
               <TierLegend staleDays={staleDays} veryStaleDays={veryStaleDays} />
               {!atRoot && includeVersions && (
                 <Text style={{ display: 'block', color: tokens.colorNeutralForeground3, fontSize: tokens.fontSizeBase200, marginBottom: tokens.spacingVerticalS }}>
-                  File squares are sized by file + version history combined ({formatBytes(versionsTotalBytes)} in version history across this folder's files); folders still show file size only — SharePoint has no recursive version-history rollup.
+                  File squares are sized by Total Storage Size ({formatBytes(versionsTotalBytes)} in Version History Size across this folder's files); folders still show Current File Size only — SharePoint has no recursive version-history rollup.
                 </Text>
               )}
               {foldedIntoOtherCount > 0 && (
@@ -1047,7 +1090,7 @@ export const ExplorerView: React.FC<ExplorerViewProps> = ({
               </div>
               {!atRoot && includeVersions && (
                 <Text style={{ display: 'block', color: tokens.colorNeutralForeground3, fontSize: tokens.fontSizeBase200, marginBottom: tokens.spacingVerticalS }}>
-                  This folder's files: {formatBytes(versionsTotalBytes)} in version history (files only — folders show '—', no recursive rollup).
+                  This folder's files: {formatBytes(versionsTotalBytes)} in Version History Size (files only — folders show '—', no recursive rollup).
                 </Text>
               )}
               {showLoading ? (

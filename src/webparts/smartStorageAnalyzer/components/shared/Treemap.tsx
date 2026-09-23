@@ -42,7 +42,7 @@ function cellTooltip(item: TreemapRect): string {
   // item.sizeBytes is file + version history combined whenever versionSizeBytes
   // is present (see ExplorerView's treemapItems) — split it back out for display.
   const sizeText = item.versionSizeBytes != null
-    ? `${formatBytes(item.sizeBytes)} (${formatBytes(item.sizeBytes - item.versionSizeBytes)} file + ${formatBytes(item.versionSizeBytes)} version history)`
+    ? `${formatBytes(item.sizeBytes)} (${formatBytes(item.sizeBytes - item.versionSizeBytes)} current + ${formatBytes(item.versionSizeBytes)} version history)`
     : formatBytes(item.sizeBytes);
   return `${item.label} — ${sizeText} — ${tierLabel(item.tier ?? CandidateTier.Active)}${ageText ? ` — modified ${ageText} ago` : ''}`;
 }

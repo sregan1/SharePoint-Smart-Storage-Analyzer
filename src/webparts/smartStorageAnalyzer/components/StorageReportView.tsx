@@ -35,6 +35,7 @@ import { StorageTable, StorageTableColumn } from './shared/StorageTable';
 import { TierLegend } from './shared/Treemap';
 import { formatBytes, formatAge, formatDuration, formatElapsed } from './shared/formatBytes';
 import { tierColor, tierLabel } from './shared/tierBadge';
+import { useIncludeVersionHistory } from './shared/useIncludeVersionHistory';
 import { diffReports } from '../utils/reportDiff';
 
 const useStyles = makeStyles({
@@ -63,10 +64,29 @@ const useStyles = makeStyles({
     gap: tokens.spacingHorizontalM,
     marginBottom: tokens.spacingVerticalL,
   },
+  sizeGroup: {
+    display: 'flex',
+    alignItems: 'stretch',
+    gap: tokens.spacingHorizontalS,
+    flexWrap: 'wrap',
+    marginBottom: tokens.spacingVerticalL,
+  },
   statTile: {
     padding: tokens.spacingVerticalM,
     background: tokens.colorNeutralBackground2,
     borderRadius: tokens.borderRadiusMedium,
+  },
+  // The aggregate figure — bolder background/border than its two addends so
+  // it visually reads as "the sum of those", not just another tile in the row.
+  totalTile: {
+    padding: tokens.spacingVerticalM,
+    background: tokens.colorBrandBackground2,
+    border: `1px solid ${tokens.colorBrandStroke2}`,
+    borderRadius: tokens.borderRadiusMedium,
+    flex: '1 1 140px',
+  },
+  sizeTile: {
+    flex: '1 1 140px',
   },
   historyRow: {
     display: 'flex',
@@ -170,7 +190,10 @@ export const StorageReportView: React.FC<StorageReportViewProps> = ({
 
   const [subsites, setSubsites] = React.useState(includeSubsites);
   const [hidden, setHidden] = React.useState(includeHidden);
-  const [includeVersions, setIncludeVersions] = React.useState(false);
+  // Shared with Tree View/List View — see useIncludeVersionHistory. Defaults
+  // on here: Version History Size is real storage against the site's quota,
+  // and Storage Report is the comprehensive "give me the true number" view.
+  const [includeVersions, setIncludeVersions] = useIncludeVersionHistory();
   // Pulled off the client on the scan ticker rather than pushed through
   // ScanProgress: both are properties of the API client, not of the scan, and
   // ExplorerView already surfaces throttling this way.
@@ -400,10 +423,10 @@ export const StorageReportView: React.FC<StorageReportViewProps> = ({
         </span>
       ),
     },
-    { key: 'size', header: 'Size', align: 'right', sortValue: (e) => e.sizeBytes, render: (e) => <span>{formatBytes(e.sizeBytes)}</span> },
+    { key: 'size', header: 'Current File Size', align: 'right', sortValue: (e) => e.sizeBytes, render: (e) => <span>{formatBytes(e.sizeBytes)}</span> },
     ...(effectiveVersionHistoryIncluded ? [{
       key: 'versionSize',
-      header: 'Version history',
+      header: 'Version History Size',
       align: 'right' as const,
       sortValue: (e: FileEntry) => e.versionSizeBytes ?? -1,
       render: (e: FileEntry) => <span>{e.versionSizeBytes !== undefined ? formatBytes(e.versionSizeBytes) : '—'}</span>,
@@ -715,7 +738,7 @@ export const StorageReportView: React.FC<StorageReportViewProps> = ({
         <Checkbox label="Include subsites" checked={subsites} onChange={(_, d) => setSubsites(!!d.checked)} disabled={scanning} />
         <Checkbox label="Include hidden/system libraries" checked={hidden} onChange={(_, d) => setHidden(!!d.checked)} disabled={scanning} />
         <Checkbox
-          label="Include version history size"
+          label="Include Version History Size"
           checked={includeVersions}
           onChange={(_, d) => setIncludeVersions(!!d.checked)}
           disabled={scanning}
@@ -794,12 +817,28 @@ export const StorageReportView: React.FC<StorageReportViewProps> = ({
             </Text>
           )}
 
-          <div className={styles.summaryGrid}>
-            <div className={styles.statTile}>
+          <div className={styles.sizeGroup}>
+            {summary.versionHistoryIncluded && (
+              <div className={styles.totalTile}>
+                <Text style={{ fontSize: tokens.fontSizeBase200, color: tokens.colorNeutralForeground3 }}>
+                  Total Storage Size{' '}
+                  <Tooltip
+                    content="Current File Size plus Version History Size combined — every byte the scanned files consume, current content and retained older versions together."
+                    relationship="label"
+                  >
+                    <Info16Regular style={{ verticalAlign: 'middle', cursor: 'help' }} />
+                  </Tooltip>
+                </Text>
+                <Text weight="bold" style={{ display: 'block', fontSize: tokens.fontSizeBase600, color: tokens.colorBrandForeground1 }}>
+                  {formatBytes(summary.totalSizeBytes + (summary.totalVersionSizeBytes ?? 0))}
+                </Text>
+              </div>
+            )}
+            <div className={`${styles.statTile} ${styles.sizeTile}`}>
               <Text style={{ fontSize: tokens.fontSizeBase200, color: tokens.colorNeutralForeground3 }}>
-                Total size{' '}
+                Current File Size{' '}
                 <Tooltip
-                  content="Sum of every scanned file's current content only — not an estimate, and never includes version history, whether or not that option was enabled for this scan. See Version history size (when shown) for that additional storage."
+                  content="Sum of every scanned file's current content only — not an estimate, and never includes version history, whether or not that option was enabled for this scan. See Version History Size (when shown) for that additional storage."
                   relationship="label"
                 >
                   <Info16Regular style={{ verticalAlign: 'middle', cursor: 'help' }} />
@@ -807,6 +846,54 @@ export const StorageReportView: React.FC<StorageReportViewProps> = ({
               </Text>
               <Text weight="semibold" style={{ display: 'block', fontSize: tokens.fontSizeBase500 }}>{formatBytes(summary.totalSizeBytes)}</Text>
             </div>
+            {summary.versionHistoryIncluded && (
+              <>
+                <div className={`${styles.statTile} ${styles.sizeTile}`}>
+                  <Text style={{ fontSize: tokens.fontSizeBase200, color: tokens.colorNeutralForeground3 }}>
+                    Version History Size{' '}
+                    <Tooltip
+                      content="Storage used by older, retained versions of files (SharePoint's version history), on top of the current file content already counted in Current File Size. This is additional storage consumed in the library."
+                      relationship="label"
+                    >
+                      <Info16Regular style={{ verticalAlign: 'middle', cursor: 'help' }} />
+                    </Tooltip>
+                  </Text>
+                  <Text weight="semibold" style={{ display: 'block', fontSize: tokens.fontSizeBase500, color: tokens.colorBrandForeground1 }}>{formatBytes(summary.totalVersionSizeBytes ?? 0)}</Text>
+                  {/* Count is the same per-file number Excel's Details sheet
+                      already had; this is just its sum, same treatment as the
+                      size total above. */}
+                  <Text style={{ display: 'block', fontSize: tokens.fontSizeBase200, color: tokens.colorNeutralForeground3 }}>
+                    {(summary.totalVersionCount ?? 0).toLocaleString()} retained version{summary.totalVersionCount === 1 ? '' : 's'}
+                  </Text>
+                  {/* How this number was obtained, when it wasn't the free bulk
+                      field. Worth surfacing because the difference between the
+                      bulk side channel and the per-file pass is the difference
+                      between a complete figure and a capped sample — and nothing
+                      else on screen would tell the user which one they got.
+
+                      Keyed on unmeasuredVersions, not on how the scan was
+                      configured: every file that can have retained versions is
+                      measured now, so anything left over means the pass was
+                      interrupted or a list had no usable source — either way the
+                      total is a floor and must say so. */}
+                  {summary.versionSizeStrategy === 'per-file' && (
+                    <Text style={{ display: 'block', fontSize: tokens.fontSizeBase200, color: tokens.colorNeutralForeground3 }}>
+                      {(summary.unmeasuredVersions ?? 0) > 0
+                        ? 'measured per file — incomplete, so this is a floor'
+                        : 'measured per file — all files with versions'}
+                    </Text>
+                  )}
+                  {summary.versionSizeStrategy === 'none' && (
+                    <Text style={{ display: 'block', fontSize: tokens.fontSizeBase200, color: tokens.colorPaletteMarigoldForeground1 }}>
+                      incomplete — no version-history source available for at least one library
+                    </Text>
+                  )}
+                </div>
+              </>
+            )}
+          </div>
+
+          <div className={styles.summaryGrid}>
             <div className={styles.statTile}>
               <Text style={{ fontSize: tokens.fontSizeBase200, color: tokens.colorNeutralForeground3 }}>Files scanned</Text>
               <Text weight="semibold" style={{ display: 'block', fontSize: tokens.fontSizeBase500 }}>{summary.totalFiles}</Text>
@@ -819,49 +906,6 @@ export const StorageReportView: React.FC<StorageReportViewProps> = ({
               <Text style={{ fontSize: tokens.fontSizeBase200, color: tokens.colorNeutralForeground3 }}>Very stale ({formatBytes(summary.veryStaleSizeBytes)})</Text>
               <Text weight="semibold" style={{ display: 'block', fontSize: tokens.fontSizeBase500 }}>{summary.veryStaleCount}</Text>
             </div>
-            {summary.versionHistoryIncluded && (
-              <div className={styles.statTile}>
-                <Text style={{ fontSize: tokens.fontSizeBase200, color: tokens.colorNeutralForeground3 }}>
-                  Version history size{' '}
-                  <Tooltip
-                    content="Storage used by older, retained versions of files (SharePoint's version history), on top of the current file content already counted in Total size. This is additional storage consumed in the library."
-                    relationship="label"
-                  >
-                    <Info16Regular style={{ verticalAlign: 'middle', cursor: 'help' }} />
-                  </Tooltip>
-                </Text>
-                <Text weight="semibold" style={{ display: 'block', fontSize: tokens.fontSizeBase500, color: tokens.colorBrandForeground1 }}>{formatBytes(summary.totalVersionSizeBytes ?? 0)}</Text>
-                {/* Count is the same per-file number Excel's Details sheet
-                    already had; this is just its sum, same treatment as the
-                    size total above. */}
-                <Text style={{ display: 'block', fontSize: tokens.fontSizeBase200, color: tokens.colorNeutralForeground3 }}>
-                  {(summary.totalVersionCount ?? 0).toLocaleString()} retained version{summary.totalVersionCount === 1 ? '' : 's'}
-                </Text>
-                {/* How this number was obtained, when it wasn't the free bulk
-                    field. Worth surfacing because the difference between the
-                    bulk side channel and the per-file pass is the difference
-                    between a complete figure and a capped sample — and nothing
-                    else on screen would tell the user which one they got.
-
-                    Keyed on unmeasuredVersions, not on how the scan was
-                    configured: every file that can have retained versions is
-                    measured now, so anything left over means the pass was
-                    interrupted or a list had no usable source — either way the
-                    total is a floor and must say so. */}
-                {summary.versionSizeStrategy === 'per-file' && (
-                  <Text style={{ display: 'block', fontSize: tokens.fontSizeBase200, color: tokens.colorNeutralForeground3 }}>
-                    {(summary.unmeasuredVersions ?? 0) > 0
-                      ? 'measured per file — incomplete, so this is a floor'
-                      : 'measured per file — all files with versions'}
-                  </Text>
-                )}
-                {summary.versionSizeStrategy === 'none' && (
-                  <Text style={{ display: 'block', fontSize: tokens.fontSizeBase200, color: tokens.colorPaletteMarigoldForeground1 }}>
-                    incomplete — no version-history source available for at least one library
-                  </Text>
-                )}
-              </div>
-            )}
           </div>
 
           <div className={styles.row}>
@@ -932,7 +976,7 @@ export const StorageReportView: React.FC<StorageReportViewProps> = ({
               <Badge appearance="tint">{formatBytes(h.summary.totalSizeBytes)}</Badge>
               <Badge appearance="tint" color="warning">{h.summary.staleCount + h.summary.veryStaleCount} stale</Badge>
               {h.summary.versionHistoryIncluded && (
-                <Badge appearance="tint" title="Version history size">{formatBytes(h.summary.totalVersionSizeBytes ?? 0)} versions</Badge>
+                <Badge appearance="tint" title="Version History Size">{formatBytes(h.summary.totalVersionSizeBytes ?? 0)} versions</Badge>
               )}
               {/* Only when the file listing genuinely isn't retrievable. This was
                   a "Partial" badge shown for any report over 50,000 rows, which

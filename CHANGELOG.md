@@ -4,6 +4,20 @@ All notable changes to this project are documented here.
 
 ---
 
+## [1.3.1] — 2026-09-22
+
+### Changed
+
+- **Renamed the three storage-size labels used throughout the app for clarity**
+  What was labeled **"Size"** / **"Total size"** is now **"Current File Size"** (current files,
+  excluding version history). What was labeled **"Version history"** / **"Version History"** is
+  now **"Version History Size"** (version history only). The combined figure used to size Treemap
+  file squares when version history is included is now called **"Total Storage Size"** (current
+  files plus version history). Updated in Tree View, List View, Storage Report (tiles, table
+  columns, checkboxes), Excel/CSV export, and the Treemap tooltip.
+
+---
+
 ## [1.3.0] — 2026-08-04
 
 ### Added

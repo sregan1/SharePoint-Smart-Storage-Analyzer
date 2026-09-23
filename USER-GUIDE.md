@@ -1,6 +1,6 @@
 # SharePoint Smart Storage Analyzer — User Guide
 
-**Version 1.3.0**
+**Version 1.3.1**
 **Applies to:** SharePoint Online
 
 ---
@@ -122,13 +122,13 @@ Switching between Treemap and List keeps you in the same folder — you don't lo
 
 ### Including Version History Size
 
-Above both the Treemap and List views, an **"Include version history size"** checkbox controls whether the currently-viewed folder's files also report how much extra storage is used by their retained older versions — SharePoint keeps prior versions of a file, and that older content is real storage on top of the file's current size, not included in it. A small info icon next to the checkbox is a reminder that this only ever applies to individual files: a **folder's** own size (in either view) never includes version history, because SharePoint has no recursive version-history rollup to read it from — only a per-file lookup.
+Above both the Treemap and List views, an **"Include Version History Size"** checkbox controls whether the currently-viewed folder's files also report how much extra storage is used by their retained older versions — SharePoint keeps prior versions of a file, and that older content is real storage on top of the file's current size, not included in it. A small info icon next to the checkbox is a reminder that this only ever applies to individual files: a **folder's** own size (in either view) never includes version history, because SharePoint has no recursive version-history rollup to read it from — only a per-file lookup.
 
 This only applies to the files currently listed, not a recursive rollup for the whole library. It costs nothing extra to turn on — version history arrives in the same bulk read used to load the folder either way, so the checkbox only controls whether it's *displayed*, not how much work the tool does.
 
 In the **Treemap**, turning this on changes how file squares are sized: each file square is weighted by its file size *plus* its version-history size combined, so files with a lot of retained version history appear visibly larger. Hovering a file (or, for a large enough square, the text shown directly on it) breaks the total back down, e.g. "24.6 MB (18.2 MB file + 6.4 MB version history)". Folder squares are unaffected — they keep showing file-content size only, for the reason above.
 
-In the **List View**, turning this on adds two columns: **Version History** (the retained-version storage, in human-readable form) and **Version Count (est.)** (how many older versions are being kept — the current version is not counted). The count is usually derived from the file's version number, so it can run slightly high on a library with a configured version-retention limit; it never runs low.
+In the **List View**, turning this on adds two columns: **Version History Size** (the retained-version storage, in human-readable form) and **Version Count (est.)** (how many older versions are being kept — the current version is not counted). The count is usually derived from the file's version number, so it can run slightly high on a library with a configured version-retention limit; it never runs low.
 
 ### Refreshing
 
@@ -137,11 +137,12 @@ Folder and library sizes are cached briefly after loading so repeat visits are f
 ### Library Switcher and Breadcrumbs
 
 - The button row at the top switches between every document library on the current site without leaving Tree View / List View.
+- A **Recycle Bin** entry is also included in the switcher, showing what's currently in the site's first-stage recycle bin. It does not include the site collection recycle bin (the second-stage bin admins use to recover items after they're removed from the first stage) — hover its icon for a reminder of this distinction.
 - The breadcrumb trail below it shows your current path from the library root; click any earlier segment to jump back to it.
 
 ### Exporting
 
-From the **List** view, use **Export Excel** or **Export CSV** to download the current folder's listing — name, size, item count, modified date, archival status, and version history size and count (if that toggle is checked) — for the folder you're currently viewing (not the whole site; use [Storage Report](#storage-report) for that). The exported filename includes the site's name, so files from different sites don't collide when saved to the same folder.
+From the **List** view, use **Export Excel** or **Export CSV** to download the current folder's listing — name, Current File Size, item count, modified date, archival status, and Version History Size and count (if that toggle is checked) — for the folder you're currently viewing (not the whole site; use [Storage Report](#storage-report) for that). The exported filename includes the site's name, so files from different sites don't collide when saved to the same folder.
 
 ---
 
@@ -156,7 +157,7 @@ The Storage Report scans an entire site — and optionally every subsite beneath
 1. From [Home](#home), click **Storage Report** (or click **Home** from another screen, then choose it).
 2. Optionally check **Include subsites** to also walk every subsite beneath the current site.
 3. Optionally check **Include hidden/system libraries** to also scan Style Library, Form Templates, and other libraries normally hidden from default views.
-4. Optionally check **Include version history size** — see [below](#version-history-in-the-storage-report).
+4. Optionally check **Include Version History Size** — see [below](#version-history-in-the-storage-report).
 5. Click **Run scan**.
 
 ![Storage Report before a scan has been run, showing the scope checkboxes and Run scan button](docs/screenshots/03_report_config.png)
@@ -167,7 +168,7 @@ While the scan runs, the progress display names exactly what's happening: which 
 
 ### Version History in the Storage Report
 
-Checking **Include version history size** adds two per-file columns to the results table — **Version History Size** (shown both in human-readable form and in raw bytes) and **Version Count** (how many older versions are retained) — and, once the scan completes, an extra summary tile, **Version History Size**, showing the total across every file scanned. An info icon next to that tile explains that this figure is *additional* storage on top of Total size, not a subset of it: version history is real space consumed by older, retained copies of a file's content.
+Checking **Include Version History Size** adds two per-file columns to the results table — **Version History Size** (shown in human-readable form) and **Version Count** (how many older versions are retained) — and, once the scan completes, an extra summary tile, **Version History Size**, showing the total across every file scanned. An info icon next to that tile explains that this figure is *additional* storage on top of Current File Size, not a subset of it: version history is real space consumed by older, retained copies of a file's content.
 
 On most libraries this costs no extra scan time at all — version-history size comes back in the same bulk read as everything else. Some lists don't report it in bulk, and those are measured one file at a time; the analyzer skips every file whose version number proves it has no older versions (usually the large majority), so even that path is typically a small fraction of the library. The progress display names whichever stage is running.
 
@@ -175,11 +176,11 @@ Whatever happens, a file whose version history couldn't be measured is reported 
 
 ### If Some Folders or Subsites Can't Be Read
 
-If part of the site couldn't be scanned — a folder that errors out, or (with **Include subsites** on) a subsite the current user can't access — the results are still shown, but a warning banner notes that the results are partial and how many folders/subsites were skipped. If **Include version history size** was on and some files' version history specifically couldn't be read (this happens independently of the folder/subsite skips above, most often due to throttling), the same banner also states how many files' version history was skipped, so a low or zero version-history total isn't mistaken for "this site has no old versions." Click **Show details** to see the specific folder URLs and the error each one hit, with a **Copy to clipboard** button so you can pass the list along (e.g. to request access, or to investigate separately).
+If part of the site couldn't be scanned — a folder that errors out, or (with **Include subsites** on) a subsite the current user can't access — the results are still shown, but a warning banner notes that the results are partial and how many folders/subsites were skipped. If **Include Version History Size** was on and some files' version history specifically couldn't be read (this happens independently of the folder/subsite skips above, most often due to throttling), the same banner also states how many files' version history was skipped, so a low or zero version-history total isn't mistaken for "this site has no old versions." Click **Show details** to see the specific folder URLs and the error each one hit, with a **Copy to clipboard** button so you can pass the list along (e.g. to request access, or to investigate separately).
 
 ### Browsing the Results
 
-Once the scan completes, summary tiles show the total size scanned, total files, and the count and size of Stale and Very-stale files (plus Version History Size and a total retained-version count, if that option was enabled). An info icon next to **Total size** is a reminder that it's an exact sum of every scanned file's current content only — never an estimate, and never including version history, whether or not that option was on for the scan. Below the tiles, the full results table lists every file — library, name, size, version history size and count (if enabled), modified date, author, and archival status — sortable by any column.
+Once the scan completes, summary tiles show the result in two groups. The first group is storage size: when **Include Version History Size** was on, it's **Total Storage Size** (highlighted, shown first), then **Current File Size** and **Version History Size** — Total Storage Size is exactly those two added together, current content plus retained older versions, and nothing else. When that option was off, only **Current File Size** is shown, since there's nothing else to add. An info icon on each tile explains what it counts. The second group, below the size tiles, shows **Files scanned** and the count and size of **Stale** and **Very-stale** files. Below both groups, the full results table lists every file — library, name, Current File Size, Version History Size and count (if enabled), modified date, author, and archival status — sortable by any column.
 
 ![Completed scan results, showing the summary tiles and the sortable file-level results table](docs/screenshots/05_report_results.png)
 
@@ -310,8 +311,8 @@ A: No. The tool is entirely read-only. It reports and helps you browse storage; 
 
 ---
 
-**Q: What does "Version history size" mean, and is it counted separately from Total size?**
-A: Yes, it's separate. SharePoint keeps older versions of a file every time it's edited, and those older versions take up real storage on top of the file's current content. Version history size is that extra amount — it's additive to Total size, not included in it. Enable **Include version history size** in Tree View / List View or Storage Report to see it. On most libraries it's free; on lists that don't report it in bulk the Storage Report measures it per file, and says so while it works.
+**Q: What does "Version History Size" mean, and is it counted separately from Current File Size?**
+A: Yes, it's separate. SharePoint keeps older versions of a file every time it's edited, and those older versions take up real storage on top of the file's current content. Version History Size is that extra amount — it's additive to Current File Size, not included in it. (Current File Size plus Version History Size together is the Total Storage Size.) Enable **Include Version History Size** in Tree View / List View or Storage Report to see it. On most libraries it's free; on lists that don't report it in bulk the Storage Report measures it per file, and says so while it works.
 
 ---
 
@@ -359,7 +360,7 @@ A: Yes. The tool talks only to your own SharePoint environment via the standard 
 
 ### The Storage Report scan takes a long time
 
-- Scan time scales with file count and, if enabled, the number of subsites. Try disabling **Include subsites**, **Include hidden/system libraries**, or **Include version history size** to narrow the scope, or lower **Concurrent API requests** if you're seeing throttling (HTTP 429) errors in the browser console.
+- Scan time scales with file count and, if enabled, the number of subsites. Try disabling **Include subsites**, **Include hidden/system libraries**, or **Include Version History Size** to narrow the scope, or lower **Concurrent API requests** if you're seeing throttling (HTTP 429) errors in the browser console.
 
 ### A scan or folder load pauses for a long stretch, then continues
 

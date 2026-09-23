@@ -29,12 +29,12 @@ Two entry points into the same screen — a WizTree-style treemap of every docum
 | **Site-wide library treemap** | Opening view sizes every library on the site by its storage rollup, answering "which library is the storage in?" before any drill-down. Libraries SharePoint hasn't yet reported a size for render as "Unknown" and are measured exactly on open — deliberately, so the root view costs one probe per library rather than a full site walk |
 | **Treemap drill-down** | Click any library or folder square to zoom into it; square size reflects storage weight at a glance. A folder measured only partially (its walk hit this view's request budget) shows as "≥ &lt;size&gt;" — a floor, not an estimate — distinct from "Unknown" (nothing could be measured) |
 | **"Other" folding** | Folders/libraries beyond the largest ~40 fold into a single "Other (N items)" cell instead of drawing slivers too small to see or click; a note above the treemap offers one click through to the List view, which shows every item individually |
-| **Library switcher** | A button row switches between every document library on the site without leaving the view |
+| **Library switcher** | A button row switches between every document library on the site without leaving the view; a **Recycle Bin** entry shows the site's first-stage recycle bin (not the site collection recycle bin) |
 | **Refresh** | Clears cached folder/library sizes for the current site and re-measures what's on screen, for when content has changed since the last load |
 | **Breadcrumb navigation** | Jump back to any ancestor folder in one click |
 | **List View** | Toggle to a sortable table of the same folder's contents — folders and files together, largest first by default |
-| **Version history size & count** | Optional per-folder toggle that adds each file's retained-version storage (and how many old versions are retained) on top of its current size — sized into the Treemap's file squares and shown as its own columns in the List View. Folder totals never include it (no recursive rollup exists for it) |
-| **Excel / CSV export** | Export the current List View (name, size, item count, modified date, archival status, version history size and count if enabled) to `.xlsx` or `.csv`; filenames are prefixed with the site name |
+| **Version History Size & count** | Optional per-folder toggle that adds each file's retained-version storage (and how many old versions are retained) on top of its Current File Size — sized into the Treemap's file squares (as Total Storage Size) and shown as its own columns in the List View. Folder totals never include it (no recursive rollup exists for it) |
+| **Excel / CSV export** | Export the current List View (name, Current File Size, item count, modified date, archival status, Version History Size and count if enabled) to `.xlsx` or `.csv`; filenames are prefixed with the site name |
 | **Archival status** | Files are tagged Active / Stale / Very stale based on configurable last-modified thresholds, shown in both the treemap and the list |
 
 Both view modes share the same drill-down state — switching from Treemap to List (or vice versa) keeps you in the same folder.
@@ -45,14 +45,14 @@ Both view modes share the same drill-down state — switching from Treemap to Li
 
 Scan a site — and optionally its subsites — and export a report of archival candidates.
 
-![Storage Report results showing summary tiles for total size, files scanned, and stale/very-stale counts, plus a sortable file-level results table](docs/screenshots/05_report_results.png)
+![Storage Report results showing summary tiles for current file size, files scanned, and stale/very-stale counts, plus a sortable file-level results table](docs/screenshots/05_report_results.png)
 
 | Feature | Description |
 |---|---|
 | **Configurable scope** | Include subsites and hidden/system libraries in the scan |
 | **Concurrent, throttling-aware scan** | Adjustable request concurrency with a stage-by-stage progress display (what's being read, a per-stage count, an ETA once there's enough data to estimate from) and an explicit "paused, waiting on SharePoint" state instead of an apparent freeze |
 | **Cancelable scans** | Stop a running scan and still see the partial results collected so far (not saved to history) |
-| **Version history size & count** | Optional toggle that adds per-file version-history size and count columns, plus summary tiles for the total size and total retained-version count across the scan — additive to Total size, not included in it. Free on most libraries (it rides the same bulk read); on a list that won't report it in bulk, only files that can actually have retained versions are measured individually |
+| **Version History Size & count** | Optional toggle that adds per-file Version History Size and count columns, plus summary tiles for the total Version History Size and total retained-version count across the scan — additive to Current File Size, not included in it (the two combined are the Total Storage Size). Free on most libraries (it rides the same bulk read); on a list that won't report it in bulk, only files that can actually have retained versions are measured individually |
 | **Partial-scan reporting** | Folders/subsites that fail to read (permissions, throttling), and files whose version history specifically couldn't be read, are called out with a warning, expandable per-item error details, and a copy-to-clipboard action, instead of silently under-reporting |
 | **Archival tiering** | Every file is classified Active, Stale, or Very stale based on configurable last-modified thresholds |
 | **In-browser results table** | Sortable results with a toggle to show only archival candidates |
@@ -199,7 +199,7 @@ config/
 
 **"npm install fails" or build errors about Node version** — This project requires Node 18.x exactly (`>=18.17.1 <19.0.0`). Run `node --version` to confirm. Use `nvm` or `nvm-windows` to switch versions.
 
-**"The Storage Report scan takes a very long time"** — Scan time scales with file count and, if enabled, the number of subsites. Version history is normally free (it rides along in the same bulk read), but a list that won't report it in bulk has to be measured one file at a time; the progress display names the stage that's running and gives a per-stage estimate. Narrow the scope in Settings (disable subsites, hidden libraries, or version history) or lower scan concurrency if you're seeing throttling (HTTP 429) errors.
+**"The Storage Report scan takes a very long time"** — Scan time scales with file count and, if enabled, the number of subsites. Version History Size is normally free (it rides along in the same bulk read), but a list that won't report it in bulk has to be measured one file at a time; the progress display names the stage that's running and gives a per-stage estimate. Narrow the scope in Settings (disable subsites, hidden libraries, or Version History Size) or lower scan concurrency if you're seeing throttling (HTTP 429) errors.
 
 **"An error mentions HTTP 406"** — this is SharePoint throttling, not a bad request: a 406 occurs when SharePoint redirects an over-limit request to an HTML throttle page instead of the JSON response that was asked for. `spCore.ts` treats 406 identically to 429/503 — it's absorbed by the shared throttle gate and retried with backoff, not surfaced as a per-item error. If it persists, lower **Concurrent API requests** in Settings.
 
