@@ -107,10 +107,10 @@ The breadcrumb always starts at **All libraries**; click it to return to the sit
 - **Square size = storage weight.** Bigger rectangles use more space. Libraries and folders are shown in blue; files are colored by their [archival status](#understanding-archival-status). A striped square means the size couldn't be determined — see the note above (at library level) or the throttling note below (at folder level).
 - **Click a library or folder** to drill into it — the treemap updates to show that item's own contents.
 - **Folder cells show their size and file count** (e.g. "24.6 MB · 138 files") when the cell is large enough to fit the text; smaller cells still show at least the name, and hovering any cell shows full detail in a tooltip.
-- **A size starting with "≥"** (e.g. "≥ 340 MB") means the folder is larger than shown but measuring it further ran into this view's request budget before it could finish — it's a floor, not an estimate. Open the folder directly to measure deeper, or raise **Concurrent API requests** in Settings so more gets measured before the budget is reached. This is distinct from **"Unknown"**, which means nothing could be measured at all.
+- **A size starting with "≥"** (e.g. "≥ 340 MB") means the measurement was stopped before this folder's subtree was fully counted — either you clicked **Cancel**, or you navigated away mid-measurement — so it's a floor, not an estimate. Open the folder again (or click **Refresh**) to measure it in full. This is distinct from **"Unknown"**, which means nothing could be measured at all.
 - The smallest items are floored to a minimum on-screen size so they stay easy to click even on a site with many small files — treemap proportions favor clickability slightly over strict mathematical precision for the tiniest items.
-- **"Other (N items)"** appears when a folder has more items than the treemap can usefully draw as separate squares — the smallest ones are folded into a single gray cell instead of being drawn as slivers too small to see or click. Hovering it explains what's inside; a note above the treemap offers a one-click **Switch to List view** button, since the List view has no such folding and shows every item individually.
-- While a folder's sizes are loading, a progress bar with a live **"N of M folders"** counter is shown instead of the treemap; the treemap appears once every size has resolved.
+- **"Other (N items)"** appears when a folder has more items than the treemap can usefully draw as separate squares — the smallest ones are folded into a single gray cell instead of being drawn as slivers too small to see or click. Hovering it explains what's inside, including how much of that combined total is version history when applicable; a note above the treemap offers a one-click **Switch to List view** button, since the List view has no such folding and shows every item individually.
+- While a library's contents are loading, a progress bar (with a live count of items read so far, and elapsed time) is shown instead of the treemap; the treemap appears once the whole library has been read. There's no time limit — click **Cancel** to stop and keep whatever was measured so far.
 
 ### The List View
 
@@ -247,7 +247,7 @@ Open **Settings** from the gear icon in the top-right corner of the header on an
 
 | Setting | Default | Description |
 |---------|---------|-------------|
-| **Concurrent API requests** | 6 | How many SharePoint API requests run in parallel during scans and folder loads (1–15). SharePoint's throttling threshold is dynamic, not a fixed number Microsoft publishes — the app retries automatically on throttling (HTTP 429/503/406) with an escalating backoff, but very high values can still net out slower than a moderate one. This also sizes how much Tree View / List View can measure before a fallback folder/library walk hits its request budget — raising it lets a walk go deeper before falling back to a "≥" (at least) result. |
+| **Concurrent API requests** | 6 | How many SharePoint API requests run in parallel during scans and folder loads (1–15). SharePoint's throttling threshold is dynamic, not a fixed number Microsoft publishes — the app retries automatically on throttling (HTTP 429/503/406) with an escalating backoff, but very high values can still net out slower than a moderate one. |
 
 If you see scans getting *slower* rather than faster as you raise this, that's throttling — turn it back down rather than waiting it out.
 

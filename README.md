@@ -27,7 +27,7 @@ Two entry points into the same screen — a WizTree-style treemap of every docum
 | Feature | Description |
 |---|---|
 | **Site-wide library treemap** | Opening view sizes every library on the site by its storage rollup, answering "which library is the storage in?" before any drill-down. Libraries SharePoint hasn't yet reported a size for render as "Unknown" and are measured exactly on open — deliberately, so the root view costs one probe per library rather than a full site walk |
-| **Treemap drill-down** | Click any library or folder square to zoom into it; square size reflects storage weight at a glance. A folder measured only partially (its walk hit this view's request budget) shows as "≥ &lt;size&gt;" — a floor, not an estimate — distinct from "Unknown" (nothing could be measured) |
+| **Treemap drill-down** | Click any library or folder square to zoom into it; square size reflects storage weight at a glance. A folder measured only partially (the measurement was canceled, by you or by navigating away mid-scan) shows as "≥ &lt;size&gt;" — a floor, not an estimate — distinct from "Unknown" (nothing could be measured) |
 | **"Other" folding** | Folders/libraries beyond the largest ~40 fold into a single "Other (N items)" cell instead of drawing slivers too small to see or click; a note above the treemap offers one click through to the List view, which shows every item individually |
 | **Library switcher** | A button row switches between every document library on the site without leaving the view; a **Recycle Bin** entry shows the site's first-stage recycle bin (not the site collection recycle bin) |
 | **Refresh** | Clears cached folder/library sizes for the current site and re-measures what's on screen, for when content has changed since the last load |
@@ -145,7 +145,7 @@ To change web part settings, put the page in **Edit** mode, click the web part p
 
 | Setting | Default | Description |
 |---|---|---|
-| **Concurrent API requests** | 6 | How many SharePoint API requests run in parallel during scans and folder loads (1–15). SharePoint's throttling limit is dynamic, not fixed — the app retries automatically on throttling (HTTP 429/503/406), but very high values can still net out slower. Also sizes how deep Tree View / List View's fallback folder/library measurement goes before falling back to a "≥" (at least) result |
+| **Concurrent API requests** | 6 | How many SharePoint API requests run in parallel during scans and folder loads (1–15). SharePoint's throttling limit is dynamic, not fixed — the app retries automatically on throttling (HTTP 429/503/406), but very high values can still net out slower |
 
 ---
 

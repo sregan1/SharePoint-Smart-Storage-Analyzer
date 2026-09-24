@@ -97,6 +97,14 @@ All notable changes to this project are documented here.
   one fits, and no longer deletes them when the failure wasn't about space.
 - **The "Default view on open" property pane field** now uses SPFx's standard dropdown control
   instead of a hand-built one that relied on an internal, undocumented field-type number.
+- **The Treemap's hover tooltip and on-square text now show a file's version-history size even
+  when it wasn't individually measured.** SharePoint's own bulk version-size field is populated by
+  a lagging background job and can simply be missing for a given file's row (most often a recently
+  added or changed one); this used to render identically to a confirmed 0 B, silently dropping the
+  version-history breakdown. It's now marked "≥", matching how the List View already flags the same
+  gap. The Treemap's folded-together "Other" cell (the smallest items beyond the ~40 shown
+  individually) also now includes version-history size in its combined tooltip total, instead of
+  omitting it entirely.
 
 ### Performance
 

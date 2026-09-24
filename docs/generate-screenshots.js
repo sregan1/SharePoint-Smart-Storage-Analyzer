@@ -143,17 +143,24 @@ function homePage(imgDataUris) {
 
 // ── 1. Explorer — Treemap view (site-wide library treemap, the opening view) ──
 function explorerTreemapPage() {
+  // Widths within each row are proportional to the size shown in that cell's
+  // own label — e.g. top row is 18.6 : 6.1 : 2.2 GB, which is 69% : 23% : 8%
+  // of that row's total, matching real treemap behavior (square size = storage
+  // weight). Each row's widths sum to 100 independently — see the note below.
   const cells = [
-    { l: 0, t: 0, w: 52, h: 62, color: FOLDER_COLOR, name: 'Documents', sub: '18.6 GB · 8,412 files' },
-    { l: 52, t: 0, w: 30, h: 62, color: FOLDER_COLOR, name: 'Campaign Archive', sub: '6.1 GB · 2,340 files' },
-    { l: 82, t: 0, w: 18, h: 62, color: FOLDER_COLOR, name: 'Site Assets', sub: '2.2 GB · 640 files' },
-    // Bottom row widths MUST sum to 100 — they previously summed to 78,
-    // leaving an uncovered 22%-wide strip of background on the right that
-    // made the treemap read as a ragged shape instead of a filled rectangle.
-    { l: 0, t: 62, w: 30, h: 38, color: FOLDER_COLOR, name: 'Old Reports', sub: '1.1 GB · 210 files' },
-    { l: 30, t: 62, w: 18, h: 38, color: FOLDER_COLOR, name: 'Templates', sub: '340 MB · 156 files' },
-    { l: 48, t: 62, w: 27, h: 38, color: '#c77f00', name: 'Legal Hold', sub: 'Unknown', pattern: true },
-    { l: 75, t: 62, w: 25, h: 38, color: OTHER_COLOR, name: 'Other (3 libraries)', sub: '620 MB combined' },
+    { l: 0, t: 0, w: 69, h: 62, color: FOLDER_COLOR, name: 'Documents', sub: '18.6 GB · 8,412 files' },
+    { l: 69, t: 0, w: 23, h: 62, color: FOLDER_COLOR, name: 'Campaign Archive', sub: '6.1 GB · 2,340 files' },
+    { l: 92, t: 0, w: 8, h: 62, color: FOLDER_COLOR, name: 'Site Assets', sub: '2.2 GB · 640 files' },
+    // Bottom row: 480 : 210 : 180 : 120 : 90 : 55 : 30 MB → 41 : 18 : 15 : 10 :
+    // 8 : 5 : 3 (rounded, sums to 100) — widths MUST sum to 100 or an
+    // uncovered strip of background breaks the filled-rectangle look.
+    { l: 0, t: 62, w: 41, h: 38, color: FOLDER_COLOR, name: 'Old Reports', sub: '480 MB · 210 files' },
+    { l: 41, t: 62, w: 18, h: 38, color: FOLDER_COLOR, name: 'Templates', sub: '210 MB · 156 files' },
+    { l: 59, t: 62, w: 15, h: 38, color: TIER.veryStale, name: 'Old-Presentation.pptx', sub: 'Very stale · 180 MB' },
+    { l: 74, t: 62, w: 10, h: 38, color: TIER.stale, name: 'Marketing-Assets.zip', sub: 'Stale · 120 MB' },
+    { l: 84, t: 62, w: 8, h: 38, color: TIER.veryStale, name: 'Archived-Budget.xlsx', sub: 'Very stale · 90 MB' },
+    { l: 92, t: 62, w: 5, h: 38, color: TIER.active, name: 'Onboarding-Guide.pdf', sub: 'Active · 55 MB' },
+    { l: 97, t: 62, w: 3, h: 38, color: TIER.active, name: 'Team-Photo.jpg', sub: 'Active · 30 MB' },
   ];
   const cellsHtml = cells.map((c) => `
     <div style="position:absolute;left:${c.l}%;top:${c.t}%;width:${c.w}%;height:${c.h}%;background:${c.pattern ? 'repeating-linear-gradient(45deg,#a36200,#a36200 6px,#c77f00 6px,#c77f00 12px)' : c.color};border:1px solid ${NEUTRAL.bg};box-sizing:border-box;padding:5px 7px;overflow:hidden;">
@@ -180,10 +187,6 @@ function explorerTreemapPage() {
     ${tierLegend(true)}
     <div style="position:relative;width:100%;height:420px;background:${NEUTRAL.tileBg};margin-bottom:8px;">
       ${cellsHtml}
-    </div>
-    <div style="display:flex;align-items:center;gap:8px;font-size:12px;color:${NEUTRAL.text2};background:${NEUTRAL.tileBg};border-radius:4px;padding:8px 12px;">
-      <span>"Other (3 libraries)" folds the smallest items out of the treemap so the biggest stay easy to click — switch to List view to see them individually.</span>
-      <button class="btn" style="padding:3px 10px;font-size:12px;white-space:nowrap;">Switch to List view</button>
     </div>`;
   return pageShell(body, {});
 }
