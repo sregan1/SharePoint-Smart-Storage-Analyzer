@@ -190,9 +190,11 @@ export const StorageReportView: React.FC<StorageReportViewProps> = ({
 
   const [subsites, setSubsites] = React.useState(includeSubsites);
   const [hidden, setHidden] = React.useState(includeHidden);
-  // Shared with Tree View/List View — see useIncludeVersionHistory. Off by
-  // default (it's real extra measurement work); check it explicitly for the
-  // true total-storage number.
+  // On by default — see useIncludeVersionHistory. Unlike Tree View/List
+  // View (which always shows version history at no extra cost), this
+  // checkbox gates real extra measurement work on some libraries, so it's
+  // adjustable here; on by default because Version History Size is what
+  // makes Total Storage Size the true storage number.
   const [includeVersions, setIncludeVersions] = useIncludeVersionHistory();
   // Pulled off the client on the scan ticker rather than pushed through
   // ScanProgress: both are properties of the API client, not of the scan, and
@@ -240,6 +242,8 @@ export const StorageReportView: React.FC<StorageReportViewProps> = ({
   const [csvExporting, setCsvExporting] = React.useState(false);
 
   const abortControllerRef = React.useRef<AbortController | null>(null);
+  // Scrolled to by the header's "View Scan History" button.
+  const historyRef = React.useRef<HTMLParagraphElement>(null);
   // Per-file counter fed by onEntry (fires potentially thousands of times
   // per scan) — flushed into `progress` state on the existing elapsed-timer
   // tick rather than on every file, so a single-library scan shows live
@@ -705,6 +709,19 @@ export const StorageReportView: React.FC<StorageReportViewProps> = ({
       <div className={styles.header}>
         <Button appearance="subtle" icon={<ArrowLeft24Regular />} onClick={onBack} aria-label="Back to home" />
         <Title3>Storage Report</Title3>
+        {/* Scan history can sit well below a large results table (up to 200
+            rows, plus the size tiles and progress area above them) — this
+            jumps straight to it instead of making the user scroll past all
+            of that first. */}
+        <Button
+          appearance="subtle"
+          size="small"
+          icon={<History24Regular />}
+          onClick={() => historyRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })}
+          style={{ marginLeft: 'auto' }}
+        >
+          View Scan History
+        </Button>
       </div>
 
       {error && (
@@ -975,7 +992,11 @@ export const StorageReportView: React.FC<StorageReportViewProps> = ({
 
       <Divider style={{ margin: `${tokens.spacingVerticalXL} 0` }} />
 
-      <Text weight="semibold" style={{ display: 'flex', alignItems: 'center', gap: '6px', marginBottom: tokens.spacingVerticalS }}>
+      <Text
+        ref={historyRef}
+        weight="semibold"
+        style={{ display: 'flex', alignItems: 'center', gap: '6px', marginBottom: tokens.spacingVerticalS, scrollMarginTop: tokens.spacingVerticalXL }}
+      >
         <History24Regular style={{ fontSize: '16px' }} /> Scan history
       </Text>
       {history.length === 0 ? (

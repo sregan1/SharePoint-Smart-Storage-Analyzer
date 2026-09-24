@@ -104,12 +104,20 @@ export function layoutTreemap(items: TreemapItem[], width: number, height: numbe
   if (sorted.length > MAX_TREEMAP_CELLS) {
     const kept = sorted.slice(0, MAX_TREEMAP_CELLS - 1);
     const folded = sorted.slice(MAX_TREEMAP_CELLS - 1);
+    // Summed alongside sizeBytes so the "Other" tooltip can break its
+    // combined total down the same way an individual file's does, instead of
+    // silently dropping version-history size the moment small files get
+    // folded together (see Treemap.tsx's cellTooltip). 0 when none of the
+    // folded items carry one (folders never do; a file only does once its
+    // version history has actually been measured).
+    const foldedVersionBytes = folded.reduce((s, i) => s + (i.versionSizeBytes ?? 0), 0);
     const other: TreemapItem = {
       id: '__other__',
       label: `Other (${folded.length} items)`,
       sizeBytes: folded.reduce((s, i) => s + i.sizeBytes, 0),
       kind: 'other',
       count: folded.length,
+      versionSizeBytes: foldedVersionBytes > 0 ? foldedVersionBytes : undefined,
     };
     visible = [...kept, other];
   }

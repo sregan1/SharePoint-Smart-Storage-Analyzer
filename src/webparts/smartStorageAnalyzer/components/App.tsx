@@ -214,7 +214,6 @@ export const App: React.FC<AppProps> = ({ context, sp, excel, defaultView, brand
   const [veryStaleDays, setVeryStaleDays] = React.useState(
     () => clampVeryStaleDays(safeGet(LS_VERY_STALE_DAYS), clampStaleDays(safeGet(LS_STALE_DAYS))),
   );
-
   React.useEffect(() => { safeSet(LS_HIDDEN, String(includeHidden)); }, [includeHidden]);
   React.useEffect(() => { safeSet(LS_SUBSITES, String(includeSubsites)); }, [includeSubsites]);
   React.useEffect(() => {

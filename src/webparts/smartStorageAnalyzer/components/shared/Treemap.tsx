@@ -24,7 +24,16 @@ function cellTooltip(item: TreemapRect): string {
   // folder or file, so there's nothing to drill into here. The List view has
   // no such folding (every row is listed individually), so that's where the
   // folded-in items actually are.
-  if (item.kind === 'other') return `${item.label} — ${formatBytes(item.sizeBytes)} combined. Switch to List view to see these individually.`;
+  if (item.kind === 'other') {
+    // Broken down the same way an individual file's size is — otherwise the
+    // folded total silently absorbs version-history bytes with no way to
+    // tell it's in there, which is easy to miss on a site where most of the
+    // version history sits in many small files rather than a few big ones.
+    const sizeText = item.versionSizeBytes != null
+      ? `${formatBytes(item.sizeBytes)} combined (${formatBytes(item.sizeBytes - item.versionSizeBytes)} current + ${formatBytes(item.versionSizeBytes)} version history)`
+      : `${formatBytes(item.sizeBytes)} combined`;
+    return `${item.label} — ${sizeText}. Switch to List view to see these individually.`;
+  }
   if (item.kind === 'folder') {
     if (item.sizeUnknown) {
       // The real error when we have one — guessing at the cause here (it used
@@ -37,14 +46,24 @@ function cellTooltip(item: TreemapRect): string {
     const size = item.sizeApproximate
       ? `at least ${formatBytes(item.sizeBytes)} (measurement was stopped before this folder's subtree was fully counted — open it to measure directly, or use Refresh to measure again)`
       : formatBytes(item.sizeBytes);
+    // A folder never carries a version-history number — SharePoint has no
+    // recursive rollup for one, and only individual files get a real,
+    // measured figure (see the file branch below).
     return `${item.label} (folder) — ${size}${fileCount}${item.lastModified ? `, most recent activity ${new Date(item.lastModified).toLocaleDateString()}` : ''}`;
   }
   const ageText = item.lastModified ? formatAge(Math.max(0, Math.floor((Date.now() - new Date(item.lastModified).getTime()) / 86400000))) : '';
   // item.sizeBytes is file + version history combined whenever versionSizeBytes
   // is present (see ExplorerView's treemapItems) — split it back out for display.
+  // versionSizeBytes undefined does NOT mean "confirmed zero" — SharePoint's
+  // own storage-metrics field is populated by a lagging background job and
+  // can simply be missing for a given file's row even on a library where
+  // most files have it (a recently added/changed file is the common case).
+  // Silently showing plain size made that indistinguishable from a file
+  // that genuinely has no retained versions, so this says so explicitly,
+  // matching the List view's "≥" treatment of the same gap.
   const sizeText = item.versionSizeBytes != null
     ? `${formatBytes(item.sizeBytes)} (${formatBytes(item.sizeBytes - item.versionSizeBytes)} current + ${formatBytes(item.versionSizeBytes)} version history)`
-    : formatBytes(item.sizeBytes);
+    : `≥ ${formatBytes(item.sizeBytes)} (version history not measured for this file yet)`;
   return `${item.label} — ${sizeText} — ${tierLabel(item.tier ?? CandidateTier.Active)}${ageText ? ` — modified ${ageText} ago` : ''}`;
 }
 
@@ -163,10 +182,12 @@ export const Treemap: React.FC<TreemapProps> = ({ items, height = 420, onFolderC
                     : `${r.sizeApproximate ? '≥ ' : ''}${formatBytes(r.sizeBytes)}${r.itemCount != null ? ` · ${r.itemCount} file${r.itemCount === 1 ? '' : 's'}` : ''}`)
                   : r.kind === 'other'
                     ? `${formatBytes(r.sizeBytes)} combined`
-                    // The tier as text, not only as the cell's color.
+                    // The tier as text, not only as the cell's color. "≥"
+                    // when version history isn't measured for this file (see
+                    // cellTooltip) — not the same as a confirmed 0 B.
                     : r.versionSizeBytes != null
                       ? `${tierText} · ${formatBytes(r.sizeBytes - r.versionSizeBytes)} + ${formatBytes(r.versionSizeBytes)} history`
-                      : `${tierText} · ${formatBytes(r.sizeBytes)}`}
+                      : `${tierText} · ≥ ${formatBytes(r.sizeBytes)}`}
               </Text>
             )}
           </div>

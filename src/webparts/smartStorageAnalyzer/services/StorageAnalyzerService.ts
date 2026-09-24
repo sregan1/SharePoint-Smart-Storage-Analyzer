@@ -82,6 +82,8 @@ export class StorageAnalyzerService {
    * walk when that's stale/unavailable (see getLibraryRollups). The walk has
    * no automatic time/count limit — pass `options.signal` to cancel it, and
    * `options.onWalkProgress` for a live folder-visited counter while it runs.
+   * Resolves once with every library's final number — see getLibraryRollups
+   * for why this is deliberately all-or-nothing rather than streamed.
    */
   getLibraryRollups(
     siteUrl: string,

@@ -312,6 +312,7 @@ export async function getFolderChildren(
       sizeSource: 'estimate',
       sizeApproximate: partial,
       versionSizeBytes: rollup.versionSizeBytes,
+      versionSizeIncomplete: rollup.versionSizeIncomplete,
       children: [],
       hasChildren: rollup.childFolders.length > 0,
     };

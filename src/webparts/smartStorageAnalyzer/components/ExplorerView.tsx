@@ -2,7 +2,6 @@ import * as React from 'react';
 import {
   Button,
   Body1,
-  Checkbox,
   Spinner,
   ProgressBar,
   Text,
@@ -26,8 +25,6 @@ import { StorageTable, StorageTableColumn } from './shared/StorageTable';
 import { SizeBar } from './shared/SizeBar';
 import { formatBytes, formatAge } from './shared/formatBytes';
 import { tierColor, tierLabel } from './shared/tierBadge';
-import { useIncludeVersionHistory } from './shared/useIncludeVersionHistory';
-import { InfoTip } from './shared/InfoTip';
 import { ageInDays, classify } from '../utils/archivalClassification';
 
 const useStyles = makeStyles({
@@ -126,9 +123,6 @@ export const ExplorerView: React.FC<ExplorerViewProps> = ({
   const [selectedFiles, setSelectedFiles] = React.useState<FolderFileRow[]>([]);
   const [filesLoading, setFilesLoading] = React.useState(false);
   const filesCache = React.useRef<Map<string, RawFolderFile[]>>(new Map());
-  // Shared with Storage Report — see useIncludeVersionHistory. One preference,
-  // synced and sticky across every screen, not a per-view default.
-  const [includeVersions, setIncludeVersions] = useIncludeVersionHistory();
   // Which files request the current selectedFiles actually belong to. Compared
   // against the live key below to answer "are the files on screen the ones for
   // the folder now selected?" — a plain `filesLoading` flag can't, because it
@@ -258,6 +252,14 @@ export const ExplorerView: React.FC<ExplorerViewProps> = ({
   // below). No automatic time/count limit any more — the user cancels via
   // the Cancel button, and SpApiClient's own throttle governor is what
   // actually protects the tenant on a large site.
+  //
+  // Deliberately all-or-nothing: two different attempts at showing partial
+  // results early (library-by-library as each resolved, then a "rough now,
+  // exact later" two-phase version) both ended up looking broken instead of
+  // fast — a library missing from the first paint, or shown as a "still
+  // measuring" placeholder, reads as an error, especially when it's the one
+  // library holding nearly everything. One loading state until every
+  // library's real number is in, then paint once.
   React.useEffect(() => {
     if (librariesLoading) return;
     if (libraries.length === 0) { setRollupsLoading(false); return; }
@@ -408,8 +410,8 @@ export const ExplorerView: React.FC<ExplorerViewProps> = ({
     });
     // Version history (size and an approximate count) is always included in
     // the fetch now at no extra cost — see storageMetrics.getFolderFiles —
-    // so the cache key and this effect no longer need to vary by
-    // includeVersions at all; that toggle only controls DISPLAY below.
+    // and is always shown, so there is nothing else this cache key needs to
+    // vary by.
     const cacheKey = selectedUrl;
     const cached = filesCache.current.get(cacheKey);
     if (cached) {
@@ -521,14 +523,12 @@ export const ExplorerView: React.FC<ExplorerViewProps> = ({
     [selectedUrl, cacheVersion],
   );
 
-  // File cells are sized by file + version history combined (when the
-  // toggle is on and that file's version fetch succeeded) so the square
+  // File cells are sized by file + version history combined so the square
   // reflects real total storage weight, not just current content — Treemap
   // then re-derives the breakdown from sizeBytes/versionSizeBytes to label
-  // and tooltip each cell. Folders can't join in: StorageMetrics doesn't
-  // report version-history totals, so a folder's own recursive rollup never
-  // includes it (see getFolderChildren/getStorageMetrics) — folder cells
-  // keep showing file-content size only.
+  // and tooltip each cell. Folder cells do NOT join in — SharePoint has no
+  // recursive version-history rollup for a folder, so their square stays
+  // sized by content only.
   const treemapItems: TreemapItem[] = React.useMemo(() => [
     ...selectedChildren.map((c) => ({
       id: c.serverRelativeUrl,
@@ -544,13 +544,13 @@ export const ExplorerView: React.FC<ExplorerViewProps> = ({
     ...selectedFiles.map((f) => ({
       id: f.serverRelativeUrl,
       label: f.name,
-      sizeBytes: f.sizeBytes + (includeVersions && f.versionSizeBytes != null ? f.versionSizeBytes : 0),
+      sizeBytes: f.sizeBytes + (f.versionSizeBytes ?? 0),
       kind: 'file' as const,
       tier: f.tier,
       lastModified: f.timeLastModified,
-      versionSizeBytes: includeVersions ? f.versionSizeBytes : undefined,
+      versionSizeBytes: f.versionSizeBytes,
     })),
-  ], [selectedChildren, selectedFiles, includeVersions]);
+  ], [selectedChildren, selectedFiles]);
 
   // Count of immediate subfolders whose size couldn't be determined (usually
   // throttling exhausted mid-walk) — surfaced as a warning rather than left
@@ -610,10 +610,6 @@ export const ExplorerView: React.FC<ExplorerViewProps> = ({
     })),
   ], [selectedChildren, selectedFiles]);
 
-  // Folders have no versionSizeBytes — a recursive rollup isn't available
-  // without a full walk (StorageMetrics doesn't report version-history
-  // totals), so only leaf files in the current folder ever get a real
-  // value; folder rows render '—' for this column.
   const versionsTotalBytes = React.useMemo(
     () => selectedFiles.reduce((sum, f) => sum + (f.versionSizeBytes ?? 0), 0),
     [selectedFiles],
@@ -672,11 +668,6 @@ export const ExplorerView: React.FC<ExplorerViewProps> = ({
     [activeListRows],
   );
 
-  // The checkbox is hidden at the library level (no files there), so the
-  // version columns must be too — otherwise, with the setting on, the root
-  // list showed a duplicate size column and two columns of "—".
-  const showVersionCols = !atRoot && includeVersions;
-
   const listColumns: StorageTableColumn<FolderListRow>[] = [
     {
       key: 'name',
@@ -699,15 +690,16 @@ export const ExplorerView: React.FC<ExplorerViewProps> = ({
         </span>
       )),
     },
-    // Folders have no recursive version-history rollup (see the Version
-    // History Size column below), so a folder's total is always just its
-    // Current File Size — this column only adds real information for files.
-    ...(showVersionCols ? [{
+    // A folder's total is its Current File Size — SharePoint has no
+    // recursive Version History Size rollup for folders, so there's nothing
+    // to add. "≥" when the folder's own size, or a file's version size, is a
+    // floor rather than exact.
+    {
       key: 'totalSize',
       header: 'Total Storage Size',
       align: 'right' as const,
       sortValue: (r: FolderListRow) => (
-        r.sizeUnknown ? -1 : r.sizeBytes + (r.kind === 'file' ? (r.versionSizeBytes ?? 0) : 0)
+        r.sizeUnknown ? -1 : r.sizeBytes + (r.versionSizeBytes ?? 0)
       ),
       render: (r: FolderListRow) => {
         if (r.sizeUnknown) {
@@ -720,11 +712,15 @@ export const ExplorerView: React.FC<ExplorerViewProps> = ({
           );
         }
         if (r.kind === 'folder') {
+          const total = r.sizeBytes + (r.versionSizeBytes ?? 0);
           return r.sizeApproximate ? (
-            <Tooltip content="At least this much. Measurement was stopped before this folder's subtree was fully counted — open the folder to measure it directly, or use Refresh to measure again." relationship="label">
-              <span tabIndex={0} style={{ cursor: 'help' }}>≥ {formatBytes(r.sizeBytes)}</span>
+            <Tooltip
+              content="At least this much. Measurement was stopped before this folder's subtree was fully counted — open the folder to measure it directly, or use Refresh to measure again."
+              relationship="label"
+            >
+              <span tabIndex={0} style={{ cursor: 'help' }}>≥ {formatBytes(total)}</span>
             </Tooltip>
-          ) : <span>{formatBytes(r.sizeBytes)}</span>;
+          ) : <span>{formatBytes(total)}</span>;
         }
         // File: real total once version history is measured; otherwise a
         // floor (current content only) rather than a silent understatement,
@@ -738,7 +734,7 @@ export const ExplorerView: React.FC<ExplorerViewProps> = ({
           </Tooltip>
         );
       },
-    }] : []),
+    },
     {
       key: 'size',
       header: 'Current File Size',
@@ -773,23 +769,24 @@ export const ExplorerView: React.FC<ExplorerViewProps> = ({
       sortValue: (r) => r.itemCount ?? -1,
       render: (r) => <span>{r.kind === 'folder' ? (r.sizeUnknown ? '—' : r.itemCount ?? '—') : ''}</span>,
     },
-    ...(showVersionCols ? [{
+    {
       key: 'versionSize',
-      // The Size column above is content size only — SharePoint's folder
-      // rollup (StorageMetrics / live walk) has no recursive version-history
-      // total, so a folder's Size never includes it. Only individual files
-      // get a real number here; folders always show '—'.
-      header: 'Version History Size (files only)',
+      // Files only — '—' when unmeasured. Folders always show '—' here since
+      // SharePoint has no recursive version-history rollup for a folder.
+      header: 'Version History Size',
       align: 'right' as const,
       sortValue: (r: FolderListRow) => r.versionSizeBytes ?? -1,
-      render: (r: FolderListRow) => <span>{r.kind === 'file' && r.versionSizeBytes !== undefined ? formatBytes(r.versionSizeBytes) : '—'}</span>,
-    }, {
+      render: (r: FolderListRow) => (r.versionSizeBytes === undefined
+        ? <span>—</span>
+        : <span>{formatBytes(r.versionSizeBytes)}</span>),
+    },
+    {
       key: 'versionCount',
-      header: 'Version Count (est.)',
+      header: 'Version Count (est., files only)',
       align: 'right' as const,
       sortValue: (r: FolderListRow) => r.versionCount ?? -1,
       render: (r: FolderListRow) => <span>{r.kind === 'file' && r.versionCount !== undefined ? r.versionCount : '—'}</span>,
-    }] : []),
+    },
     {
       key: 'modified',
       header: 'Modified',
@@ -829,13 +826,13 @@ export const ExplorerView: React.FC<ExplorerViewProps> = ({
       // (library) level has its own row set, and exporting the folder-level
       // one there would silently export stale data from whatever folder was
       // last visited instead of the libraries actually on screen.
-      await excel.exportFolderListing(activeListRows, contextLabel, !atRoot && includeVersions);
+      await excel.exportFolderListing(activeListRows, contextLabel, !atRoot);
     } catch (err: any) {
       setError(`Excel export failed: ${err?.message ?? String(err)}`);
     }
   };
   const handleExportCsv = (): void => {
-    excel.exportFolderListingCsv(activeListRows, contextLabel, !atRoot && includeVersions);
+    excel.exportFolderListingCsv(activeListRows, contextLabel, !atRoot);
   };
 
   // Re-measure the current view from SharePoint. All three caches must go:
@@ -1051,25 +1048,6 @@ export const ExplorerView: React.FC<ExplorerViewProps> = ({
           </TabList>
 
           <div style={{ marginBottom: tokens.spacingVerticalS, display: 'flex', alignItems: 'center', gap: tokens.spacingHorizontalS }}>
-            {/* Shown at the root too, even though it has no effect on library/
-                folder rollups there (see the tooltip) — it's a shared setting
-                that decides what happens the moment a library is opened, and
-                hiding it here made it invisible for however long the root
-                sweep runs, which is most of what you see right after clicking
-                Tree View or List View. */}
-            <div style={{ display: 'flex', alignItems: 'center', gap: tokens.spacingHorizontalXS }}>
-              <Checkbox
-                label="Include Version History Size"
-                checked={includeVersions}
-                onChange={(_, d) => setIncludeVersions(!!d.checked)}
-              />
-              <InfoTip
-                label="About Version History Size"
-                content={atRoot
-                  ? "Only individual files get a real version-history number — library and folder sizes never include it, so this has no effect on the treemap or list you're looking at right now. It decides whether files show it once you open a library. This setting is shared with the Storage Report and remembered."
-                  : "Only individual files get a real version-history number — SharePoint's folder size rollup has no recursive version-history total, so a folder's Current File Size never includes its files' version history, on or off. Version History Size is exact; Version Count is an estimate based on the file's current version number, so it can run slightly high (never low) on a library with a configured version-retention limit. This setting is shared with the Storage Report and remembered."}
-              />
-            </div>
             <div style={{ display: 'flex', alignItems: 'center', gap: tokens.spacingHorizontalS, marginLeft: 'auto' }}>
               <Tooltip
                 content="Discard cached sizes and measure this view again. Use this to retry folders showing Unknown or ≥, or after content has changed — sizes are otherwise kept until the page is reloaded."
@@ -1101,9 +1079,9 @@ export const ExplorerView: React.FC<ExplorerViewProps> = ({
           {viewMode === 'treemap' ? (
             <div>
               <TierLegend staleDays={staleDays} veryStaleDays={veryStaleDays} />
-              {!atRoot && includeVersions && (
+              {!atRoot && (
                 <Text style={{ display: 'block', color: tokens.colorNeutralForeground3, fontSize: tokens.fontSizeBase200, marginBottom: tokens.spacingVerticalS }}>
-                  File squares are sized by Total Storage Size ({formatBytes(versionsTotalBytes)} in Version History Size across this folder's files); folders still show Current File Size only — SharePoint has no recursive version-history rollup.
+                  File squares are sized by Total Storage Size ({formatBytes(versionsTotalBytes)} in Version History Size across this folder's files); folder squares stay sized by Current File Size only — SharePoint has no recursive Version History Size rollup for folders.
                 </Text>
               )}
               {foldedIntoOtherCount > 0 && (
@@ -1144,9 +1122,9 @@ export const ExplorerView: React.FC<ExplorerViewProps> = ({
                   </Button>
                 </div>
               </div>
-              {!atRoot && includeVersions && (
+              {!atRoot && (
                 <Text style={{ display: 'block', color: tokens.colorNeutralForeground3, fontSize: tokens.fontSizeBase200, marginBottom: tokens.spacingVerticalS }}>
-                  This folder's files: {formatBytes(versionsTotalBytes)} in Version History Size (files only — folders show '—', no recursive rollup).
+                  This folder's own files: {formatBytes(versionsTotalBytes)} in Version History Size. Subfolder rows show "—" — SharePoint has no recursive Version History Size rollup for folders.
                 </Text>
               )}
               {showLoading ? (

@@ -86,6 +86,16 @@ export interface LibraryRollup {
 // library measured here is already resident when the user opens it — the
 // landing screen effectively pre-warms whatever it had to measure the hard
 // way.
+//
+// Deliberately all-or-nothing: this used to stream partial/placeholder
+// results to the caller so the screen could paint early, in two different
+// shapes (library-by-library, then a "rough now, exact later" two-phase
+// version). Both looked wrong in practice — a library missing from the first
+// paint, or shown as a striped "still measuring" placeholder, reads as
+// broken rather than as progress, especially when it's the one library that
+// holds nearly everything. Simpler and more trustworthy: the caller shows a
+// single loading state until every library has its real, final number, then
+// paints the whole treemap at once.
 export async function getLibraryRollups(
   client: SpApiClient,
   siteUrl: string,

@@ -55,7 +55,10 @@ export interface FolderStorageNode {
   children: FolderStorageNode[];
   hasChildren: boolean;
   isLoading?: boolean;
+  // Recursive rollup — see FolderRollup.versionSizeBytes/versionSizeIncomplete
+  // in folderAggregate.ts for exactly what these do and don't guarantee.
   versionSizeBytes?: number;
+  versionSizeIncomplete?: boolean;
 }
 
 export interface FileEntry {
@@ -304,6 +307,9 @@ export interface TreemapItem {
   lastModified?: string;
   count?: number; // populated only for the aggregated "Other" bucket
   itemCount?: number; // folders only — rolled-up file count (FolderStorageNode.fileCount)
+  // Files only — an unmeasured file's versionSizeBytes is simply undefined.
+  // Folders never carry one: SharePoint has no recursive version-history
+  // rollup for a folder, so there is nothing exact to show.
   versionSizeBytes?: number;
   // Folders only — true when FolderStorageNode.sizeSource === 'error': the
   // size/count shown is not a confirmed result, just whatever partial total
@@ -332,7 +338,9 @@ export interface FolderListRow {
   ageDays?: number;           // files only
   tier?: CandidateTier;       // files only
   authorDisplayName?: string; // files only
-  versionSizeBytes?: number;  // files only — folders show '—' (no recursive rollup)
+  // Files only — the file's own measured version size (or undefined if
+  // unmeasured). Folders never carry one — see TreemapItem.versionSizeBytes.
+  versionSizeBytes?: number;
   versionCount?: number;      // files only — see FileEntry.versionCount
   sizeUnknown?: boolean;      // folders only — see TreemapItem.sizeUnknown
   sizeErrorMessage?: string;  // folders only — the actual failure, for hover detail

@@ -18,10 +18,20 @@ export interface FolderRollup {
   // Recursive: this folder and everything beneath it.
   totalSizeBytes: number;
   // Retained-version bytes beneath this folder, recursive. undefined when
-  // the library didn't report version sizes (see listItems.ts field
-  // negotiation) — deliberately distinct from 0, which means "reported, and
-  // there is no retained version content here".
+  // NOTHING beneath it has a measured version size yet (see listItems.ts
+  // field negotiation) — deliberately distinct from 0, which means "at least
+  // one file contributed, and the total genuinely is zero".
   versionSizeBytes?: number;
+  // True when at least one file beneath this folder has an UNMEASURED
+  // version size (FlatItem.versionSizeBytes === undefined) — so
+  // versionSizeBytes, even when defined, is a floor rather than an exact
+  // recursive total. The Explorer sweeps a library's items but deliberately
+  // never runs the version-size ESCALATION pass the Storage Report does (see
+  // storageMetrics.ts's comment on onVersionFieldUnavailable), so on any
+  // library where the bulk field isn't directly selectable, this ends up true
+  // for most or all folders — that's expected, not a bug: the app would
+  // otherwise show a confident recursive total built from mostly-absent data.
+  versionSizeIncomplete?: boolean;
   fileCount: number;
   // Most recent Modified anywhere beneath this folder.
   lastModified?: string;
@@ -54,6 +64,7 @@ function newRollup(path: string): FolderRollup {
     name: leafName(path),
     totalSizeBytes: 0,
     versionSizeBytes: undefined,
+    versionSizeIncomplete: false,
     fileCount: 0,
     lastModified: undefined,
     childFolders: [],
@@ -115,6 +126,8 @@ export function aggregateLibrary(rootUrl: string, items: FlatItem[]): LibraryAgg
       rollup.fileCount++;
       if (item.versionSizeBytes != null) {
         rollup.versionSizeBytes = (rollup.versionSizeBytes ?? 0) + item.versionSizeBytes;
+      } else {
+        rollup.versionSizeIncomplete = true;
       }
       if (item.modified && (!rollup.lastModified || item.modified > rollup.lastModified)) {
         rollup.lastModified = item.modified;

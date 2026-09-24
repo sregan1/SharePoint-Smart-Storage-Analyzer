@@ -177,10 +177,6 @@ function explorerTreemapPage() {
       <div style="padding:8px 16px;font-size:13px;font-weight:600;color:${BRAND};border-bottom:2px solid ${BRAND};margin-bottom:-2px;">Treemap</div>
       <div style="padding:8px 16px;font-size:13px;color:${NEUTRAL.text2};">List</div>
     </div>
-    <div style="display:flex;align-items:center;gap:6px;margin-bottom:4px;">
-      <span class="checkbox"><span class="box"></span>Include Version History Size</span>
-      ${icon(INFO_SVG, 14, NEUTRAL.text3)}
-    </div>
     ${tierLegend(true)}
     <div style="position:relative;width:100%;height:420px;background:${NEUTRAL.tileBg};margin-bottom:8px;">
       ${cellsHtml}
@@ -234,10 +230,6 @@ function explorerListPage() {
       <div style="padding:8px 16px;font-size:13px;color:${NEUTRAL.text2};">Treemap</div>
       <div style="padding:8px 16px;font-size:13px;font-weight:600;color:${BRAND};border-bottom:2px solid ${BRAND};margin-bottom:-1px;">List</div>
     </div>
-    <div style="display:flex;align-items:center;gap:6px;margin-bottom:12px;">
-      <span class="checkbox"><span class="box checked"></span>Include Version History Size</span>
-      ${icon(INFO_SVG, 14, NEUTRAL.text3)}
-    </div>
     <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;margin-bottom:8px;">
       ${tierLegend(false)}
       <div style="display:flex;gap:8px;">
@@ -262,7 +254,7 @@ function reportConfigPage() {
     <div style="display:flex;align-items:center;gap:16px;flex-wrap:wrap;">
       <span class="checkbox"><span class="box"></span>Include subsites</span>
       <span class="checkbox"><span class="box"></span>Include hidden/system libraries</span>
-      <span class="checkbox"><span class="box"></span>Include Version History Size</span>
+      <span class="checkbox"><span class="box checked"></span>Include Version History Size</span>
       <button class="btn primary">Run scan</button>
     </div>`;
   return pageShell(body, { maxWidth: '1100px' });
@@ -278,7 +270,7 @@ function reportRunningPage() {
     <div style="display:flex;align-items:center;gap:16px;flex-wrap:wrap;margin-bottom:24px;">
       <span class="checkbox"><span class="box checked"></span>Include subsites</span>
       <span class="checkbox"><span class="box"></span>Include hidden/system libraries</span>
-      <span class="checkbox"><span class="box"></span>Include Version History Size</span>
+      <span class="checkbox"><span class="box checked"></span>Include Version History Size</span>
       <button class="btn primary" style="opacity:0.6;">Scanning…</button>
       <button class="btn">Cancel</button>
     </div>

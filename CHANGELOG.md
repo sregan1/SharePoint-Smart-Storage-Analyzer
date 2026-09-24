@@ -32,11 +32,16 @@ All notable changes to this project are documented here.
   scanned, Stale, and Very stale. The Excel Summary sheet uses the same grouping, with blank rows
   between groups.
 
-- **"Include Version History Size" is now one shared, remembered setting**
-  One setting covers Tree View, List View, and the Storage Report — check it on either screen and
-  it's checked everywhere, and your choice is remembered across sessions. Still off by default:
-  measuring version history is real extra work, so this keeps browsing and scanning fast unless
-  you ask for the true total-storage number.
+- **Tree View / List View always shows Version History Size — no checkbox any more**
+  Version history is fetched at no extra cost during the same sweep that loads a folder either
+  way, so there was nothing the checkbox actually saved by being off. Total Storage Size, Version
+  History Size, and Version Count are now always-on columns and always factor into the Treemap's
+  file square sizing.
+
+- **The Storage Report's "Include Version History Size" is now checked by default**
+  It's what makes Total Storage Size the true total-storage number, so it starts on; uncheck it
+  for a faster scan when you only need current-content size. Your choice is remembered across
+  sessions. (This checkbox is no longer shared with Tree View / List View, which has none.)
 
 - **Incomplete version-history totals are marked "≥"**
   When some files' version history couldn't be measured, Version History Size and Total Storage
@@ -45,12 +50,6 @@ All notable changes to this project are documented here.
 
 - **List View pages large folders** 200 rows at a time, and its exports use the same column order
   as the on-screen table.
-
-- **The "Include Version History Size" checkbox is now visible from the moment you open Tree
-  View or List View**, not only after opening a library — it has no effect on the site-root
-  screen (library sizes never include version history), but it's the setting that decides what
-  happens the instant you drill into one, so it's no longer hidden while that's the only thing on
-  screen.
 
 - **Deleting a saved scan asks for confirmation.**
 

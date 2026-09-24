@@ -322,27 +322,26 @@ export class ExcelExportService {
       let col = 1;
       row.getCell(col++).value = r.kind === 'folder' ? 'Folder' : 'File';
       row.getCell(col++).value = r.name;
-      const hasVersion = r.kind === 'file' && r.versionSizeBytes != null;
-      // A folder measured only partially is a floor, shown the same way the
-      // app shows it.
+      // Folders never carry a version-history value (see FolderListRow.
+      // versionSizeBytes) — only files do, so hasVersion is false for every
+      // folder row and folderFloor only fires on the size-approximate case.
+      const hasVersion = r.versionSizeBytes != null;
       const folderFloor = r.kind === 'folder' && r.sizeApproximate ? '≥ ' : '';
       if (includeVersionHistory) {
-        // A folder's total is just its Current File Size (no recursive
-        // version-history rollup). A file whose version history wasn't
-        // measured gets a floor (current content only), not a silent
-        // understatement — the "≥" mirrors the in-app List view's treatment
-        // of the same gap.
         const totalBytes = r.sizeBytes + (hasVersion ? r.versionSizeBytes! : 0);
+        // A file whose version history wasn't measured gets a floor (current
+        // content only), not a silent understatement — the "≥" mirrors the
+        // in-app List view's treatment of the same gap.
         const totalFloor = folderFloor || (r.kind === 'file' && !hasVersion ? '≥ ' : '');
         row.getCell(col++).value = r.sizeUnknown ? 'Unknown' : `${totalFloor}${formatBytes(totalBytes)}`;
         row.getCell(col++).value = totalBytes;
       }
       // "Unknown", as in the app, rather than a misleading "0 B".
-      row.getCell(col++).value = r.sizeUnknown ? 'Unknown' : `${folderFloor}${formatBytes(r.sizeBytes)}`;
+      row.getCell(col++).value = r.sizeUnknown ? 'Unknown' : `${r.kind === 'folder' && r.sizeApproximate ? '≥ ' : ''}${formatBytes(r.sizeBytes)}`;
       row.getCell(col++).value = r.sizeBytes;
       row.getCell(col++).value = r.itemCount ?? '';
       if (includeVersionHistory) {
-        row.getCell(col++).value = hasVersion ? formatBytes(r.versionSizeBytes!) : '';
+        row.getCell(col++).value = hasVersion ? `${folderFloor}${formatBytes(r.versionSizeBytes!)}` : '';
         row.getCell(col++).value = hasVersion ? r.versionSizeBytes! : '';
         row.getCell(col++).value = r.kind === 'file' && r.versionCount != null ? r.versionCount : '';
       }
@@ -384,7 +383,8 @@ export class ExcelExportService {
     header.push('Modified', 'Age (days)', 'Author', 'Status');
     const out: string[][] = [header];
     for (const r of rows) {
-      const hasVersion = r.kind === 'file' && r.versionSizeBytes != null;
+      // Folders never carry a version-history value — files only.
+      const hasVersion = r.versionSizeBytes != null;
       const row = [r.kind === 'folder' ? 'Folder' : 'File', r.name];
       if (includeVersionHistory) {
         row.push(String(r.sizeBytes + (hasVersion ? r.versionSizeBytes! : 0)));
