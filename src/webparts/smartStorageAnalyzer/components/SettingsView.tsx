@@ -13,6 +13,7 @@ import {
 } from '@fluentui/react-components';
 import { ArrowLeft24Regular, Info16Regular } from '@fluentui/react-icons';
 import { clampConcurrency, clampStaleDays, clampVeryStaleDays } from '../utils/settingsBounds';
+import * as strings from 'SmartStorageAnalyzerWebPartStrings';
 
 const useStyles = makeStyles({
   root: {
@@ -82,42 +83,42 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
     <div className={styles.root}>
       <div className={styles.header}>
         <Button appearance="subtle" icon={<ArrowLeft24Regular />} onClick={onBack}>
-          Back
+          {strings.Settings_Back}
         </Button>
-        <Title3>Settings</Title3>
+        <Title3>{strings.Settings_Title}</Title3>
       </div>
 
       <div style={{ display: 'flex', flexDirection: 'column', gap: tokens.spacingVerticalXL }}>
 
         {/* ── Scope ── */}
         <div className={styles.section}>
-          <Text weight="semibold" style={{ display: 'block' }}>Scope</Text>
+          <Text weight="semibold" style={{ display: 'block' }}>{strings.Settings_Section_Scope}</Text>
           <div className={styles.row}>
             <Checkbox
-              label="Include subsites in Storage Report scans"
+              label={strings.Settings_IncludeSubsites_Label}
               checked={includeSubsites}
               onChange={(_, d) => onIncludeSubsitesChange(!!d.checked)}
             />
             <Tooltip
-              content="When checked, the Storage Report also walks every subsite beneath this site. Does not affect Tree View or List View, which are always scoped to the current site."
+              content={strings.Settings_IncludeSubsites_Tooltip}
               relationship="description"
               withArrow
             >
-              <Button appearance="transparent" icon={<Info16Regular />} size="small" style={{ minWidth: 'unset', padding: '2px' }} aria-label="More info about subsites" />
+              <Button appearance="transparent" icon={<Info16Regular />} size="small" style={{ minWidth: 'unset', padding: '2px' }} aria-label={strings.Settings_IncludeSubsites_InfoAria} />
             </Tooltip>
           </div>
           <div className={styles.row}>
             <Checkbox
-              label="Include system and hidden libraries"
+              label={strings.Settings_IncludeHidden_Label}
               checked={includeHidden}
               onChange={(_, d) => onIncludeHiddenChange(!!d.checked)}
             />
             <Tooltip
-              content="When checked, includes Style Library, Form Templates, and other libraries normally hidden from default views. Applies to all tools."
+              content={strings.Settings_IncludeHidden_Tooltip}
               relationship="description"
               withArrow
             >
-              <Button appearance="transparent" icon={<Info16Regular />} size="small" style={{ minWidth: 'unset', padding: '2px' }} aria-label="More info about hidden libraries" />
+              <Button appearance="transparent" icon={<Info16Regular />} size="small" style={{ minWidth: 'unset', padding: '2px' }} aria-label={strings.Settings_IncludeHidden_InfoAria} />
             </Tooltip>
           </div>
         </div>
@@ -126,14 +127,13 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
 
         {/* ── Archival thresholds ── */}
         <div className={styles.section}>
-          <Text weight="semibold" style={{ display: 'block' }}>Archival thresholds</Text>
+          <Text weight="semibold" style={{ display: 'block' }}>{strings.Settings_Section_Thresholds}</Text>
           <Text size={200} className={styles.hint} style={{ marginLeft: 0 }}>
-            Based on last modified date only — SharePoint does not expose a reliable last-accessed
-            signal at scale.
+            {strings.Settings_Thresholds_Hint}
           </Text>
 
           <div className={styles.row}>
-            <Label>Stale after (days):</Label>
+            <Label>{strings.Settings_StaleAfter_Label}</Label>
             <SpinButton
               value={staleDays}
               min={1}
@@ -144,11 +144,11 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
             />
           </div>
           <Text size={200} className={styles.hint}>
-            Files not modified in this many days are flagged "Stale" — a candidate for review. Default: 180.
+            {strings.Settings_StaleAfter_Hint}
           </Text>
 
           <div className={styles.row} style={{ marginTop: tokens.spacingVerticalS }}>
-            <Label>Very stale after (days):</Label>
+            <Label>{strings.Settings_VeryStaleAfter_Label}</Label>
             <SpinButton
               value={veryStaleDays}
               min={staleDays + 1}
@@ -159,7 +159,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
             />
           </div>
           <Text size={200} className={styles.hint}>
-            Files not modified in this many days are flagged "Very stale" — a strong archival candidate. Default: 365.
+            {strings.Settings_VeryStaleAfter_Hint}
           </Text>
         </div>
 
@@ -167,10 +167,10 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
 
         {/* ── Performance ── */}
         <div className={styles.section}>
-          <Text weight="semibold" style={{ display: 'block' }}>Performance</Text>
+          <Text weight="semibold" style={{ display: 'block' }}>{strings.Settings_Section_Performance}</Text>
 
           <div className={styles.row}>
-            <Label>Concurrent API requests:</Label>
+            <Label>{strings.Settings_Concurrency_Label}</Label>
             <SpinButton
               value={scanConcurrency}
               min={1}
@@ -179,15 +179,15 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
               style={{ width: '80px' }}
             />
             <Tooltip
-              content="How many SharePoint API requests run in parallel during scans and folder loads. SharePoint doesn't publish a fixed throttling limit — it's dynamic per tenant — so there's no universal 'right' number. If you push this up and start seeing things slow down instead of speed up, that's throttling kicking in; the app retries automatically, but turning this back down will help more than waiting it out."
+              content={strings.Settings_Concurrency_Tooltip}
               relationship="description"
               withArrow
             >
-              <Button appearance="transparent" icon={<Info16Regular />} size="small" style={{ minWidth: 'unset', padding: '2px' }} aria-label="More info about concurrency" />
+              <Button appearance="transparent" icon={<Info16Regular />} size="small" style={{ minWidth: 'unset', padding: '2px' }} aria-label={strings.Settings_Concurrency_InfoAria} />
             </Tooltip>
           </div>
           <Text size={200} className={styles.hint}>
-            Higher values scan faster but may trigger SharePoint throttling — the app retries automatically, but very high values can still net out slower. Default: 6.
+            {strings.Settings_Concurrency_Hint}
           </Text>
         </div>
 
@@ -195,16 +195,16 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
 
         {/* ── Default view instructions ── */}
         <div className={styles.section}>
-          <Text weight="semibold" style={{ display: 'block' }}>Default view on load</Text>
+          <Text weight="semibold" style={{ display: 'block' }}>{strings.Settings_Section_DefaultView}</Text>
           <Text size={300} style={{ display: 'block', color: tokens.colorNeutralForeground2 }}>
-            To change which screen opens when the web part first loads, edit the web part properties:
+            {strings.Settings_DefaultView_Intro}
           </Text>
           <ol className={styles.instructionList}>
             {[
-              <>Put the SharePoint page into <strong>Edit</strong> mode.</>,
-              <>Click the <strong>pencil (edit)</strong> icon on the Smart Storage Analyzer web part.</>,
-              <>In the property panel, choose a view from the <strong>Default view on open</strong> dropdown.</>,
-              <><strong>Republish</strong> the page to save the change.</>,
+              <>{strings.Settings_Step1_Pre}<strong>{strings.Settings_Step1_Bold}</strong>{strings.Settings_Step1_Post}</>,
+              <>{strings.Settings_Step2_Pre}<strong>{strings.Settings_Step2_Bold}</strong>{strings.Settings_Step2_Post}</>,
+              <>{strings.Settings_Step3_Pre}<strong>{strings.Settings_Step3_Bold}</strong>{strings.Settings_Step3_Post}</>,
+              <><strong>{strings.Settings_Step4_Bold}</strong>{strings.Settings_Step4_Post}</>,
             ].map((step, i) => (
               <li key={i}>
                 <Text size={300} style={{ color: tokens.colorNeutralForeground2 }}>{step}</Text>

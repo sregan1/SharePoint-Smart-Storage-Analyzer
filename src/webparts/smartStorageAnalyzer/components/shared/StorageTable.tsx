@@ -1,6 +1,8 @@
 import * as React from 'react';
 import { makeStyles, shorthands, tokens, Button, Text } from '@fluentui/react-components';
 import { ChevronDown16Regular, ChevronRight16Regular } from '@fluentui/react-icons';
+import * as strings from 'SmartStorageAnalyzerWebPartStrings';
+import { formatString } from '../localeUtils';
 
 const useStyles = makeStyles({
   table: {
@@ -185,15 +187,18 @@ export function StorageTable<T>({
         marginTop: tokens.spacingVerticalS,
       }}>
         <Text style={{ fontSize: tokens.fontSizeBase200, color: tokens.colorNeutralForeground3 }}>
-          Showing {(currentPage * pageSize + 1).toLocaleString()}–
-          {Math.min((currentPage + 1) * pageSize, sorted.length).toLocaleString()} of {sorted.length.toLocaleString()}
+          {formatString(strings.Table_ShowingRange, {
+            from: (currentPage * pageSize + 1).toLocaleString(),
+            to: Math.min((currentPage + 1) * pageSize, sorted.length).toLocaleString(),
+            total: sorted.length.toLocaleString(),
+          })}
         </Text>
         <div style={{ display: 'flex', alignItems: 'center', gap: tokens.spacingHorizontalS }}>
           <Button size="small" appearance="secondary" disabled={currentPage === 0} onClick={() => setPage((p) => Math.max(0, p - 1))}>
-            Previous
+            {strings.Table_PreviousButton}
           </Button>
           <Text style={{ fontSize: tokens.fontSizeBase200, whiteSpace: 'nowrap' }}>
-            Page {currentPage + 1} of {pageCount}
+            {formatString(strings.Table_PageOf, { current: currentPage + 1, total: pageCount })}
           </Text>
           <Button
             size="small"
@@ -201,7 +206,7 @@ export function StorageTable<T>({
             disabled={currentPage >= pageCount - 1}
             onClick={() => setPage((p) => Math.min(pageCount - 1, p + 1))}
           >
-            Next
+            {strings.Table_NextButton}
           </Button>
         </div>
       </div>

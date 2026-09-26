@@ -18,6 +18,7 @@ import {
 } from '@fluentui/react-icons';
 import { AppView } from './App';
 import { readableTextOn } from './shared/readableText';
+import * as strings from 'SmartStorageAnalyzerWebPartStrings';
 import screenshotTree from '../assets/screenshot_tree.png';
 import screenshotList from '../assets/screenshot_list.png';
 import screenshotReport from '../assets/screenshot_report.png';
@@ -126,29 +127,29 @@ export const HomeView: React.FC<HomeViewProps> = ({ onNavigate, primaryColor, ca
     {
       view: 'tree' as AppView,
       icon: <DataTreemap24Regular style={{ flexShrink: 0 }} />,
-      title: 'Tree View',
+      title: strings.Home_Card_Tree_Title,
       screenshot: screenshotTree,
-      alt: 'Tree View treemap of libraries and folders sized by storage',
-      desc: 'See every library and folder as a proportional treemap, sized by storage used, and drill straight into the biggest ones.',
-      buttonLabel: 'Open Tree View',
+      alt: strings.Home_Card_Tree_Alt,
+      desc: strings.Home_Card_Tree_Desc,
+      buttonLabel: strings.Home_Card_Tree_Button,
     },
     {
       view: 'list' as AppView,
       icon: <AppsList24Regular style={{ flexShrink: 0 }} />,
-      title: 'List View',
+      title: strings.Home_Card_List_Title,
       screenshot: screenshotList,
-      alt: 'List View sortable table of folders and files',
-      desc: 'Browse folders and files in a sortable table — size, file count, last modified — for a more precise, spreadsheet-like look.',
-      buttonLabel: 'Open List View',
+      alt: strings.Home_Card_List_Alt,
+      desc: strings.Home_Card_List_Desc,
+      buttonLabel: strings.Home_Card_List_Button,
     },
     {
       view: 'report' as AppView,
       icon: <DataBarVertical24Regular style={{ flexShrink: 0 }} />,
-      title: 'Storage Report',
+      title: strings.Home_Card_Report_Title,
       screenshot: screenshotReport,
-      alt: 'Storage Report configuration and export screen',
-      desc: 'Run a full scan of the site (optionally including subsites) and export a detailed Excel report of stale and very stale files.',
-      buttonLabel: 'Run Storage Report',
+      alt: strings.Home_Card_Report_Alt,
+      desc: strings.Home_Card_Report_Desc,
+      buttonLabel: strings.Home_Card_Report_Button,
     },
   ];
 
@@ -157,7 +158,7 @@ export const HomeView: React.FC<HomeViewProps> = ({ onNavigate, primaryColor, ca
       <div className={styles.banner} style={{ background: primaryColor }}>
         <HardDrive24Regular style={{ color: bannerText, fontSize: '20px', flexShrink: 0 }} />
         <Text style={{ color: bannerText, fontWeight: tokens.fontWeightSemibold, whiteSpace: 'nowrap' }}>
-          SharePoint Smart Storage Analyzer
+          {strings.App_HeaderTitle}
         </Text>
       </div>
 
@@ -178,15 +179,15 @@ export const HomeView: React.FC<HomeViewProps> = ({ onNavigate, primaryColor, ca
           }}>
             <span style={{ flexShrink: 0, fontSize: '16px' }}>⚠️</span>
             <span>
-              <strong>Site Owner access required — </strong>
-              Storage totals rely on the same right as classic Site Settings → Storage Metrics. Contact a site owner if you have questions.
+              <strong>{strings.App_SiteOwnerWarning_Title}</strong>
+              {strings.App_SiteOwnerWarning_Body}
             </span>
           </div>
         )}
 
         <div className={styles.subtitle}>
           <Body1 style={{ color: tokens.colorNeutralForeground3 }}>
-            Understand where your SharePoint storage is going — no PowerShell required.
+            {strings.Home_Subtitle}
           </Body1>
         </div>
 
@@ -226,7 +227,7 @@ export const HomeView: React.FC<HomeViewProps> = ({ onNavigate, primaryColor, ca
                 <img src={screenshot} alt={alt} className={styles.cardImage} />
                 <div className={styles.cardFooter}>
                   {disabled ? (
-                    <Tooltip content="Requires Site Owner access" relationship="description">
+                    <Tooltip content={strings.Home_DisabledTooltip} relationship="description">
                       {navButton}
                     </Tooltip>
                   ) : navButton}
@@ -245,9 +246,7 @@ export const HomeView: React.FC<HomeViewProps> = ({ onNavigate, primaryColor, ca
           }}
         >
           <Body1 style={{ color: tokens.colorNeutralForeground3 }}>
-            <strong>Note:</strong> This web part runs as the currently signed-in
-            user. It can only see sites and libraries that user has permission
-            to view.
+            <strong>{strings.Home_FooterNote_Label}</strong> {strings.Home_FooterNote_Body}
           </Body1>
         </div>
       </div>

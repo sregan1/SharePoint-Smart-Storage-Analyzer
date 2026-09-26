@@ -4,6 +4,7 @@ import { BaseClientSideWebPart } from '@microsoft/sp-webpart-base';
 import type { IReadonlyTheme } from '@microsoft/sp-component-base';
 import * as React from 'react';
 import * as ReactDom from 'react-dom';
+import * as strings from 'SmartStorageAnalyzerWebPartStrings';
 
 import { App, AppView, IBrandColors } from './components/App';
 import { StorageAnalyzerService } from './services/StorageAnalyzerService';
@@ -117,17 +118,17 @@ export default class SmartStorageAnalyzerWebPart extends BaseClientSideWebPart<I
   protected getPropertyPaneConfiguration(): IPropertyPaneConfiguration {
     return {
       pages: [{
-        header: { description: 'Smart Storage Analyzer configuration' },
+        header: { description: strings.PropertyPane_HeaderDescription },
         groups: [{
-          groupName: 'General',
+          groupName: strings.PropertyPane_Group_General,
           groupFields: [
             PropertyPaneDropdown('defaultView', {
-              label: 'Default view on open',
+              label: strings.PropertyPane_DefaultView_Label,
               options: [
-                { key: 'home', text: 'Home' },
-                { key: 'tree', text: 'Tree View' },
-                { key: 'list', text: 'List View' },
-                { key: 'report', text: 'Storage Report' },
+                { key: 'home', text: strings.PropertyPane_DefaultView_Home },
+                { key: 'tree', text: strings.PropertyPane_DefaultView_Tree },
+                { key: 'list', text: strings.PropertyPane_DefaultView_List },
+                { key: 'report', text: strings.PropertyPane_DefaultView_Report },
               ],
               selectedKey: resolveDefaultView(this.properties.defaultView),
             }),

@@ -26,6 +26,8 @@ import { SizeBar } from './shared/SizeBar';
 import { formatBytes, formatAge } from './shared/formatBytes';
 import { tierColor, tierLabel } from './shared/tierBadge';
 import { ageInDays, classify } from '../utils/archivalClassification';
+import * as strings from 'SmartStorageAnalyzerWebPartStrings';
+import { formatString } from './localeUtils';
 
 const useStyles = makeStyles({
   root: {
@@ -242,7 +244,7 @@ export const ExplorerView: React.FC<ExplorerViewProps> = ({
         if (canceled) return;
         setLibraries(libs);
       })
-      .catch((err: any) => { if (!canceled) setError(`Failed to load libraries: ${err?.message ?? String(err)}`); })
+      .catch((err: any) => { if (!canceled) setError(formatString(strings.Explorer_Error_LoadLibraries, { message: err?.message ?? String(err) })); })
       .finally(() => { if (!canceled) setLibrariesLoading(false); });
     return () => { canceled = true; };
   }, [siteUrl, refreshToken]);
@@ -276,7 +278,7 @@ export const ExplorerView: React.FC<ExplorerViewProps> = ({
       })
       .catch((err: any) => {
         if (!isCurrentScan(ctrl)) return;
-        setError(`Failed to load libraries: ${err?.message ?? String(err)}`);
+        setError(formatString(strings.Explorer_Error_LoadLibraries, { message: err?.message ?? String(err) }));
       })
       .finally(() => {
         if (!isCurrentScan(ctrl)) return;
@@ -358,7 +360,7 @@ export const ExplorerView: React.FC<ExplorerViewProps> = ({
         // failure as "this folder is empty" would misreport a permissions
         // error or throttling exhaustion as an actual empty folder.
         childrenCache.current.set(url, []);
-        setError(`Failed to load folder contents: ${err?.message ?? String(err)}`);
+        setError(formatString(strings.Explorer_Error_LoadFolderContents, { message: err?.message ?? String(err) }));
       })
       .finally(() => {
         if (!isCurrentScan(ctrl)) return; // do not clobber a newer scan
@@ -459,7 +461,7 @@ export const ExplorerView: React.FC<ExplorerViewProps> = ({
         // transient error) as "this folder is genuinely empty" — surface it
         // instead. Not cached, so revisiting the folder retries the fetch.
         setSelectedFiles([]);
-        setError(`Failed to load folder files: ${err?.message ?? String(err)}`);
+        setError(formatString(strings.Explorer_Error_LoadFolderFiles, { message: err?.message ?? String(err) }));
         // Mark resolved even on failure, or the readiness gate below would
         // hold the loading indicator forever and the error banner explaining
         // what happened would never be reachable.
@@ -501,7 +503,7 @@ export const ExplorerView: React.FC<ExplorerViewProps> = ({
     // Site root, always first: the library-level treemap is a real level in
     // the drill-down now, so it needs a way back. Empty url is the sentinel
     // the click handler maps to "clear the library selection".
-    trail.unshift({ name: 'All libraries', url: '' });
+    trail.unshift({ name: strings.Explorer_Breadcrumb_AllLibraries, url: '' });
     return trail;
 
     function findName(url: string): string {
@@ -575,11 +577,11 @@ export const ExplorerView: React.FC<ExplorerViewProps> = ({
       // content negotiation as 406. Classifying it as "unusual folder name"
       // (as this once did) blames the data and tells users the one setting
       // that helps won't help.
-      if (/HTTP 429|HTTP 503|HTTP 406|throttl/i.test(message)) reasons.add('SharePoint throttling');
-      else if (/HTTP 40[13]/.test(message)) reasons.add('permission denied on that folder');
-      else if (/threshold/i.test(message)) reasons.add('the folder exceeds SharePoint\'s list view threshold');
+      if (/HTTP 429|HTTP 503|HTTP 406|throttl/i.test(message)) reasons.add(strings.Explorer_Reason_Throttling);
+      else if (/HTTP 40[13]/.test(message)) reasons.add(strings.Explorer_Reason_PermissionDenied);
+      else if (/threshold/i.test(message)) reasons.add(strings.Explorer_Reason_ListViewThreshold);
       else if (message) reasons.add(message.split(' — ')[0]);
-      else reasons.add('an unrecorded error');
+      else reasons.add(strings.Explorer_Reason_Unrecorded);
     }
     return [...reasons];
   }, [unknownSizeFolders]);
@@ -671,7 +673,7 @@ export const ExplorerView: React.FC<ExplorerViewProps> = ({
   const listColumns: StorageTableColumn<FolderListRow>[] = [
     {
       key: 'name',
-      header: 'Name',
+      header: strings.Explorer_Col_Name,
       sortValue: (r) => r.name,
       render: (r) => (r.kind === 'folder' ? (
         <Button
@@ -696,7 +698,7 @@ export const ExplorerView: React.FC<ExplorerViewProps> = ({
     // floor rather than exact.
     {
       key: 'totalSize',
-      header: 'Total Storage Size',
+      header: strings.Explorer_Col_TotalStorageSize,
       align: 'right' as const,
       sortValue: (r: FolderListRow) => (
         r.sizeUnknown ? -1 : r.sizeBytes + (r.versionSizeBytes ?? 0)
@@ -704,9 +706,9 @@ export const ExplorerView: React.FC<ExplorerViewProps> = ({
       render: (r: FolderListRow) => {
         if (r.sizeUnknown) {
           return (
-            <Tooltip content={r.sizeErrorMessage ?? 'Size could not be determined, and no error detail was recorded. Not a confirmed empty folder.'} relationship="label">
+            <Tooltip content={r.sizeErrorMessage ?? strings.Explorer_SizeUnknownTooltip} relationship="label">
               <span tabIndex={0} style={{ display: 'inline-flex', alignItems: 'center', gap: '4px', color: tokens.colorPaletteMarigoldForeground1, cursor: 'help' }}>
-                <Warning16Regular /> Unknown
+                <Warning16Regular /> {strings.Explorer_SizeUnknownLabel}
               </span>
             </Tooltip>
           );
@@ -715,7 +717,7 @@ export const ExplorerView: React.FC<ExplorerViewProps> = ({
           const total = r.sizeBytes + (r.versionSizeBytes ?? 0);
           return r.sizeApproximate ? (
             <Tooltip
-              content="At least this much. Measurement was stopped before this folder's subtree was fully counted — open the folder to measure it directly, or use Refresh to measure again."
+              content={strings.Explorer_SizeApproximateTooltip}
               relationship="label"
             >
               <span tabIndex={0} style={{ cursor: 'help' }}>≥ {formatBytes(total)}</span>
@@ -729,7 +731,7 @@ export const ExplorerView: React.FC<ExplorerViewProps> = ({
         return r.versionSizeBytes !== undefined ? (
           <span>{formatBytes(r.sizeBytes + r.versionSizeBytes)}</span>
         ) : (
-          <Tooltip content="This file's version history could not be measured, so this total is a floor — current file content only." relationship="label">
+          <Tooltip content={strings.Explorer_VersionUnmeasuredTooltip} relationship="label">
             <span tabIndex={0} style={{ cursor: 'help' }}>≥ {formatBytes(r.sizeBytes)}</span>
           </Tooltip>
         );
@@ -737,22 +739,22 @@ export const ExplorerView: React.FC<ExplorerViewProps> = ({
     },
     {
       key: 'size',
-      header: 'Current File Size',
+      header: strings.Explorer_Col_CurrentFileSize,
       align: 'right',
       // Sort unknown-size folders as smallest rather than 0 — a confirmed
       // empty folder and an unmeasurable one shouldn't be indistinguishable
       // in sort order either.
       sortValue: (r) => (r.sizeUnknown ? -1 : r.sizeBytes),
       render: (r) => (r.sizeUnknown ? (
-        <Tooltip content={r.sizeErrorMessage ?? 'Size could not be determined, and no error detail was recorded. Not a confirmed empty folder.'} relationship="label">
+        <Tooltip content={r.sizeErrorMessage ?? strings.Explorer_SizeUnknownTooltip} relationship="label">
           <span tabIndex={0} style={{ display: 'inline-flex', alignItems: 'center', gap: '4px', color: tokens.colorPaletteMarigoldForeground1, cursor: 'help' }}>
-            <Warning16Regular /> Unknown
+            <Warning16Regular /> {strings.Explorer_SizeUnknownLabel}
           </span>
         </Tooltip>
       ) : (
         <div style={{ display: 'flex', alignItems: 'center', gap: '8px', justifyContent: 'flex-end' }}>
           {r.sizeApproximate ? (
-            <Tooltip content="At least this much. Measurement was stopped before this folder's subtree was fully counted — open the folder to measure it directly, or use Refresh to measure again." relationship="label">
+            <Tooltip content={strings.Explorer_SizeApproximateTooltip} relationship="label">
               <span tabIndex={0} style={{ minWidth: '64px', textAlign: 'right', cursor: 'help' }}>≥ {formatBytes(r.sizeBytes)}</span>
             </Tooltip>
           ) : (
@@ -764,7 +766,7 @@ export const ExplorerView: React.FC<ExplorerViewProps> = ({
     },
     {
       key: 'items',
-      header: 'Items',
+      header: strings.Explorer_Col_Items,
       align: 'right',
       sortValue: (r) => r.itemCount ?? -1,
       render: (r) => <span>{r.kind === 'folder' ? (r.sizeUnknown ? '—' : r.itemCount ?? '—') : ''}</span>,
@@ -773,7 +775,7 @@ export const ExplorerView: React.FC<ExplorerViewProps> = ({
       key: 'versionSize',
       // Files only — '—' when unmeasured. Folders always show '—' here since
       // SharePoint has no recursive version-history rollup for a folder.
-      header: 'Version History Size',
+      header: strings.Explorer_Col_VersionHistorySize,
       align: 'right' as const,
       sortValue: (r: FolderListRow) => r.versionSizeBytes ?? -1,
       render: (r: FolderListRow) => (r.versionSizeBytes === undefined
@@ -782,25 +784,25 @@ export const ExplorerView: React.FC<ExplorerViewProps> = ({
     },
     {
       key: 'versionCount',
-      header: 'Version Count (est., files only)',
+      header: strings.Explorer_Col_VersionCount,
       align: 'right' as const,
       sortValue: (r: FolderListRow) => r.versionCount ?? -1,
       render: (r: FolderListRow) => <span>{r.kind === 'file' && r.versionCount !== undefined ? r.versionCount : '—'}</span>,
     },
     {
       key: 'modified',
-      header: 'Modified',
+      header: strings.Explorer_Col_Modified,
       sortValue: (r) => r.lastModified ?? '',
       render: (r) => (r.lastModified ? (
         <span>
           {new Date(r.lastModified).toLocaleDateString()}
-          {r.kind === 'file' && r.ageDays != null ? ` (${formatAge(r.ageDays)} ago)` : ''}
+          {r.kind === 'file' && r.ageDays != null ? formatString(strings.Explorer_AgeSuffix, { age: formatAge(r.ageDays) }) : ''}
         </span>
       ) : <span>—</span>),
     },
     {
       key: 'tier',
-      header: 'Status',
+      header: strings.Explorer_Col_Status,
       sortValue: (r) => r.ageDays ?? -1,
       render: (r) => (r.kind === 'file' && r.tier ? (
         <span style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
@@ -814,7 +816,7 @@ export const ExplorerView: React.FC<ExplorerViewProps> = ({
   // Derived straight from the breadcrumb, skipping its "All libraries" root.
   // (It used to prefix currentLibrary.title separately, which now duplicates
   // it — the library is itself a breadcrumb segment since the root level.)
-  const contextLabel = breadcrumb.slice(1).map((b) => b.name).join(' / ') || 'All libraries';
+  const contextLabel = breadcrumb.slice(1).map((b) => b.name).join(' / ') || strings.Explorer_Breadcrumb_AllLibraries;
   // Excel export lazy-loads a chunk and writes a workbook, so unlike CSV it
   // has real ways to fail — left un-caught (as `void`-fired before), a
   // failure was an invisible unhandled promise rejection with no user-facing
@@ -828,7 +830,7 @@ export const ExplorerView: React.FC<ExplorerViewProps> = ({
       // last visited instead of the libraries actually on screen.
       await excel.exportFolderListing(activeListRows, contextLabel, !atRoot);
     } catch (err: any) {
-      setError(`Excel export failed: ${err?.message ?? String(err)}`);
+      setError(formatString(strings.Explorer_Error_ExcelExport, { message: err?.message ?? String(err) }));
     }
   };
   const handleExportCsv = (): void => {
@@ -896,17 +898,17 @@ export const ExplorerView: React.FC<ExplorerViewProps> = ({
   // know. The item counter below carries the real "something is happening"
   // signal.
   const loadingStatus = cancelRequested
-    ? 'Stopping — finishing the page already in flight…'
+    ? strings.Explorer_Status_Stopping
     : throttled
-      ? 'Paused — SharePoint is throttling requests. Waiting for it to allow more…'
+      ? strings.Explorer_Status_Throttled
       : atRoot
-        ? 'Measuring library sizes…'
-        : 'Reading library contents…';
+        ? strings.Explorer_Status_MeasuringLibraries
+        : strings.Explorer_Status_ReadingContents;
 
   // Items, not folders: one flat sweep reads files and folders together, so
   // the honest unit of progress is items read.
   const visitedText = itemsRead > 0
-    ? ` — ${itemsRead.toLocaleString()} item${itemsRead === 1 ? '' : 's'} read`
+    ? formatString(itemsRead === 1 ? strings.Explorer_ItemsRead_Singular : strings.Explorer_ItemsRead_Plural, { count: itemsRead.toLocaleString() })
     : '';
 
   const loadingIndicator = (
@@ -920,12 +922,11 @@ export const ExplorerView: React.FC<ExplorerViewProps> = ({
           color: throttled ? tokens.colorPaletteMarigoldForeground1 : tokens.colorNeutralForeground3,
         }}
       >
-        {loadingStatus}{visitedText} — {loadElapsed}s elapsed
+        {loadingStatus}{visitedText}{formatString(strings.Explorer_ElapsedSuffix, { seconds: loadElapsed })}
       </Text>
       {loadElapsed >= 20 && !throttled && !cancelRequested && (
         <Text style={{ display: 'block', fontSize: tokens.fontSizeBase200, color: tokens.colorNeutralForeground3 }}>
-          This library is read once, in full — after that, every folder inside it opens instantly.
-          There is no time limit; click Cancel to stop now and keep what has been measured so far.
+          {strings.Explorer_LongLoadNote}
         </Text>
       )}
     </div>
@@ -935,8 +936,8 @@ export const ExplorerView: React.FC<ExplorerViewProps> = ({
     <div className={styles.root}>
       {onBack && (
         <div style={{ marginBottom: tokens.spacingVerticalM }}>
-          <Button appearance="subtle" icon={<ArrowLeft24Regular />} onClick={onBack} aria-label="Back to home">
-            Home
+          <Button appearance="subtle" icon={<ArrowLeft24Regular />} onClick={onBack} aria-label={strings.Explorer_BackToHomeAria}>
+            {strings.Explorer_BackToHomeButton}
           </Button>
         </div>
       )}
@@ -949,9 +950,7 @@ export const ExplorerView: React.FC<ExplorerViewProps> = ({
       {!showLoading && canceledKeys.has(atRoot ? '' : selectedUrl) && (
         <MessageBar intent="warning" style={{ marginBottom: tokens.spacingVerticalM }}>
           <MessageBarBody>
-            Measurement canceled — showing what was measured before you stopped. Folders that weren't
-            finished show "≥ size" (a real floor) or "Unknown" (never reached). Use Refresh to measure
-            this view again.
+            {strings.Explorer_CanceledBanner}
           </MessageBarBody>
         </MessageBar>
       )}
@@ -959,13 +958,12 @@ export const ExplorerView: React.FC<ExplorerViewProps> = ({
       {!showLoading && !atRoot && unknownSizeFolderCount > 0 && (
         <MessageBar intent="warning" style={{ marginBottom: tokens.spacingVerticalM }}>
           <MessageBarBody>
-            {unknownSizeFolderCount} folder{unknownSizeFolderCount === 1 ? '' : 's'} could not be measured, even after
-            retrying, and show as "Unknown" rather than a real size — they are not confirmed empty.
-            {' '}Cause: {unknownSizeReasons.join('; ')}.
-            {unknownSizeReasons.some((r) => r.includes('throttl'))
-              ? ' Lowering Concurrent API requests in Settings usually helps.'
-              : ' This is specific to those folders — changing Concurrent API requests will not affect it.'}
-            {' '}Hover a folder for its exact error, or check the browser console.
+            {formatString(unknownSizeFolderCount === 1 ? strings.Explorer_UnknownSizeFolder_Singular : strings.Explorer_UnknownSizeFolder_Plural, { count: unknownSizeFolderCount })}
+            {formatString(strings.Explorer_UnknownSizeCause, { reasons: unknownSizeReasons.join('; ') })}
+            {unknownSizeReasons.some((r) => r === strings.Explorer_Reason_Throttling)
+              ? strings.Explorer_UnknownSizeAdvice_Throttling
+              : strings.Explorer_UnknownSizeAdvice_Other}
+            {strings.Explorer_UnknownSizeHoverHint}
           </MessageBarBody>
         </MessageBar>
       )}
@@ -976,18 +974,15 @@ export const ExplorerView: React.FC<ExplorerViewProps> = ({
       {!showLoading && atRoot && unknownRootCount > 0 && (
         <MessageBar intent="info" style={{ marginBottom: tokens.spacingVerticalM }}>
           <MessageBarBody>
-            {unknownRootCount} librar{unknownRootCount === 1 ? 'y' : 'ies'} could not be measured and
-            show as "Unknown" — most often SharePoint throttling. Try Refresh in a moment, or open the
-            library to measure it directly. Sizes shown as "≥" are real floors, measured as far as the
-            scan got.
+            {formatString(unknownRootCount === 1 ? strings.Explorer_UnknownRoot_Singular : strings.Explorer_UnknownRoot_Plural, { count: unknownRootCount })}
           </MessageBarBody>
         </MessageBar>
       )}
 
       {librariesLoading ? (
-        <Spinner size="small" label="Loading libraries…" />
+        <Spinner size="small" label={strings.Explorer_LoadingLibraries} />
       ) : libraries.length === 0 ? (
-        <Body1 style={{ color: tokens.colorNeutralForeground3 }}>No document libraries found on this site.</Body1>
+        <Body1 style={{ color: tokens.colorNeutralForeground3 }}>{strings.Explorer_NoLibrariesFound}</Body1>
       ) : (
         <>
           <div className={styles.libraryRow}>
@@ -996,13 +991,13 @@ export const ExplorerView: React.FC<ExplorerViewProps> = ({
               size="small"
               onClick={() => setLibraryUrl(undefined)}
             >
-              Site
+              {strings.Explorer_SiteButton}
             </Button>
             {libraries.map((l) => (
               l.isRecycleBin ? (
                 <Tooltip
                   key={l.serverRelativeUrl}
-                  content="First-stage Recycle Bin — items an end user can still restore. Items purged to the site collection Recycle Bin require Site Collection Administrator access and aren't included."
+                  content={strings.Explorer_RecycleBinTooltip}
                   relationship="description"
                 >
                   <Button
@@ -1043,14 +1038,14 @@ export const ExplorerView: React.FC<ExplorerViewProps> = ({
           </div>
 
           <TabList selectedValue={viewMode} onTabSelect={(_, d) => setViewMode(d.value as 'treemap' | 'list')} style={{ marginBottom: tokens.spacingVerticalM }}>
-            <Tab value="treemap">Treemap</Tab>
-            <Tab value="list">List</Tab>
+            <Tab value="treemap">{strings.Explorer_Tab_Treemap}</Tab>
+            <Tab value="list">{strings.Explorer_Tab_List}</Tab>
           </TabList>
 
           <div style={{ marginBottom: tokens.spacingVerticalS, display: 'flex', alignItems: 'center', gap: tokens.spacingHorizontalS }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: tokens.spacingHorizontalS, marginLeft: 'auto' }}>
               <Tooltip
-                content="Discard cached sizes and measure this view again. Use this to retry folders showing Unknown or ≥, or after content has changed — sizes are otherwise kept until the page is reloaded."
+                content={strings.Explorer_RefreshTooltip}
                 relationship="description"
               >
                 <Button
@@ -1060,16 +1055,16 @@ export const ExplorerView: React.FC<ExplorerViewProps> = ({
                   onClick={handleRefresh}
                   disabled={showLoading}
                 >
-                  Refresh
+                  {strings.Explorer_RefreshButton}
                 </Button>
               </Tooltip>
               {showLoading && (
                 <Tooltip
-                  content="Stop measuring now and keep what has been measured so far. Folders that weren't finished show “≥ size” or “Unknown”."
+                  content={strings.Explorer_CancelTooltip}
                   relationship="description"
                 >
                   <Button appearance="secondary" size="small" onClick={handleCancel} disabled={cancelRequested}>
-                    {cancelRequested ? 'Canceling…' : 'Cancel'}
+                    {cancelRequested ? strings.Explorer_CancelingButton : strings.Explorer_CancelButton}
                   </Button>
                 </Tooltip>
               )}
@@ -1081,16 +1076,16 @@ export const ExplorerView: React.FC<ExplorerViewProps> = ({
               <TierLegend staleDays={staleDays} veryStaleDays={veryStaleDays} />
               {!atRoot && (
                 <Text style={{ display: 'block', color: tokens.colorNeutralForeground3, fontSize: tokens.fontSizeBase200, marginBottom: tokens.spacingVerticalS }}>
-                  File squares are sized by Total Storage Size ({formatBytes(versionsTotalBytes)} in Version History Size across this folder's files); folder squares stay sized by Current File Size only — SharePoint has no recursive Version History Size rollup for folders.
+                  {formatString(strings.Explorer_TreemapVersionNote, { bytes: formatBytes(versionsTotalBytes) })}
                 </Text>
               )}
               {foldedIntoOtherCount > 0 && (
                 <Text style={{ display: 'block', color: tokens.colorNeutralForeground3, fontSize: tokens.fontSizeBase200, marginBottom: tokens.spacingVerticalS }}>
-                  The {foldedIntoOtherCount} smallest item{foldedIntoOtherCount === 1 ? '' : 's'} here {foldedIntoOtherCount === 1 ? 'is' : 'are'} combined into the "Other" square — it isn't a real folder or file, so there's nothing to click into.{' '}
+                  {formatString(foldedIntoOtherCount === 1 ? strings.Explorer_FoldedOther_Singular_Pre : strings.Explorer_FoldedOther_Plural_Pre, { count: foldedIntoOtherCount })}
                   <Button appearance="transparent" size="small" onClick={() => setViewMode('list')} style={{ padding: 0, minWidth: 'unset', height: 'auto', verticalAlign: 'baseline' }}>
-                    Switch to List view
+                    {strings.Explorer_SwitchToListView}
                   </Button>
-                  {' '}to see them individually.
+                  {strings.Explorer_FoldedOther_Post}
                 </Text>
               )}
               {showLoading ? (
@@ -1103,7 +1098,7 @@ export const ExplorerView: React.FC<ExplorerViewProps> = ({
                   />
                   {activeTreemapItems.length === 0 && !error && (
                     <Body1 style={{ color: tokens.colorNeutralForeground3, marginTop: tokens.spacingVerticalM }}>
-                      {atRoot ? 'No libraries with measurable content on this site.' : 'This folder has no subfolders or files.'}
+                      {atRoot ? strings.Explorer_NoLibrariesMeasurable : strings.Explorer_NoSubfoldersOrFiles}
                     </Body1>
                   )}
                 </>
@@ -1115,23 +1110,23 @@ export const ExplorerView: React.FC<ExplorerViewProps> = ({
                 <TierLegend staleDays={staleDays} veryStaleDays={veryStaleDays} />
                 <div style={{ display: 'flex', alignItems: 'center', gap: tokens.spacingHorizontalS }}>
                   <Button icon={<DocumentArrowDown24Regular />} appearance="secondary" size="small" onClick={handleExportExcel} disabled={activeListRows.length === 0}>
-                    Export Excel
+                    {strings.Explorer_ExportExcelButton}
                   </Button>
                   <Button icon={<DocumentArrowDown24Regular />} appearance="secondary" size="small" onClick={handleExportCsv} disabled={activeListRows.length === 0}>
-                    Export CSV
+                    {strings.Explorer_ExportCsvButton}
                   </Button>
                 </div>
               </div>
               {!atRoot && (
                 <Text style={{ display: 'block', color: tokens.colorNeutralForeground3, fontSize: tokens.fontSizeBase200, marginBottom: tokens.spacingVerticalS }}>
-                  This folder's own files: {formatBytes(versionsTotalBytes)} in Version History Size. Subfolder rows show "—" — SharePoint has no recursive Version History Size rollup for folders.
+                  {formatString(strings.Explorer_ListVersionNote, { bytes: formatBytes(versionsTotalBytes) })}
                 </Text>
               )}
               {showLoading ? (
                 loadingIndicator
               ) : activeListRows.length === 0 && !error ? (
                 <Body1 style={{ color: tokens.colorNeutralForeground3 }}>
-                  {atRoot ? 'No libraries found on this site.' : 'This folder is empty.'}
+                  {atRoot ? strings.Explorer_NoLibrariesOnSite : strings.Explorer_FolderEmpty}
                 </Body1>
               ) : (
                 <StorageTable

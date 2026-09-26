@@ -12,5 +12,7 @@
     }
   },
   "externals": {},
-  "localizedResources": {}
+  "localizedResources": {
+    "SmartStorageAnalyzerWebPartStrings": "lib/webparts/smartStorageAnalyzer/loc/{locale}.js"
+  }
 }

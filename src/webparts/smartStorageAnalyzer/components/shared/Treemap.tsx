@@ -5,6 +5,8 @@ import { layoutTreemap } from '../../utils/treemapLayout';
 import { FOLDER_COLOR, OTHER_COLOR, TIER_COLORS, tierLabel } from './tierBadge';
 import { formatBytes, formatAge } from './formatBytes';
 import { readableTextOn } from './readableText';
+import * as strings from 'SmartStorageAnalyzerWebPartStrings';
+import { formatString } from '../localeUtils';
 
 // Diagonal stripes (rather than a solid fill) for a folder whose size
 // couldn't be determined — visually distinct at a glance from a genuinely
@@ -30,26 +32,35 @@ function cellTooltip(item: TreemapRect): string {
     // tell it's in there, which is easy to miss on a site where most of the
     // version history sits in many small files rather than a few big ones.
     const sizeText = item.versionSizeBytes != null
-      ? `${formatBytes(item.sizeBytes)} combined (${formatBytes(item.sizeBytes - item.versionSizeBytes)} current + ${formatBytes(item.versionSizeBytes)} version history)`
-      : `${formatBytes(item.sizeBytes)} combined`;
-    return `${item.label} — ${sizeText}. Switch to List view to see these individually.`;
+      ? formatString(strings.Treemap_Other_SizeCombinedWithVersion, {
+        total: formatBytes(item.sizeBytes),
+        current: formatBytes(item.sizeBytes - item.versionSizeBytes),
+        version: formatBytes(item.versionSizeBytes),
+      })
+      : formatString(strings.Treemap_Other_SizeCombined, { total: formatBytes(item.sizeBytes) });
+    return formatString(strings.Treemap_Other_Tooltip, { label: item.label, sizeText });
   }
   if (item.kind === 'folder') {
     if (item.sizeUnknown) {
       // The real error when we have one — guessing at the cause here (it used
       // to always blame throttling) sends people to fix the wrong thing.
       return item.sizeErrorMessage
-        ? `${item.label} (folder) — size unknown. ${item.sizeErrorMessage}`
-        : `${item.label} (folder) — size not reported by SharePoint yet. Open it to measure it exactly.`;
+        ? formatString(strings.Treemap_Folder_UnknownWithError, { label: item.label, error: item.sizeErrorMessage })
+        : formatString(strings.Treemap_Folder_UnknownNoError, { label: item.label });
     }
-    const fileCount = item.itemCount != null ? `, ${item.itemCount} file${item.itemCount === 1 ? '' : 's'}` : '';
+    const fileCount = item.itemCount != null
+      ? formatString(item.itemCount === 1 ? strings.Treemap_Folder_FileCount_Singular : strings.Treemap_Folder_FileCount_Plural, { count: item.itemCount })
+      : '';
     const size = item.sizeApproximate
-      ? `at least ${formatBytes(item.sizeBytes)} (measurement was stopped before this folder's subtree was fully counted — open it to measure directly, or use Refresh to measure again)`
+      ? formatString(strings.Treemap_Folder_SizeApproximate, { bytes: formatBytes(item.sizeBytes) })
       : formatBytes(item.sizeBytes);
     // A folder never carries a version-history number — SharePoint has no
     // recursive rollup for one, and only individual files get a real,
     // measured figure (see the file branch below).
-    return `${item.label} (folder) — ${size}${fileCount}${item.lastModified ? `, most recent activity ${new Date(item.lastModified).toLocaleDateString()}` : ''}`;
+    const lastModified = item.lastModified
+      ? formatString(strings.Treemap_Folder_LastModifiedSuffix, { date: new Date(item.lastModified).toLocaleDateString() })
+      : '';
+    return formatString(strings.Treemap_Folder_Tooltip, { label: item.label, size, fileCount, lastModified });
   }
   const ageText = item.lastModified ? formatAge(Math.max(0, Math.floor((Date.now() - new Date(item.lastModified).getTime()) / 86400000))) : '';
   // item.sizeBytes is file + version history combined whenever versionSizeBytes
@@ -62,9 +73,19 @@ function cellTooltip(item: TreemapRect): string {
   // that genuinely has no retained versions, so this says so explicitly,
   // matching the List view's "≥" treatment of the same gap.
   const sizeText = item.versionSizeBytes != null
-    ? `${formatBytes(item.sizeBytes)} (${formatBytes(item.sizeBytes - item.versionSizeBytes)} current + ${formatBytes(item.versionSizeBytes)} version history)`
-    : `≥ ${formatBytes(item.sizeBytes)} (version history not measured for this file yet)`;
-  return `${item.label} — ${sizeText} — ${tierLabel(item.tier ?? CandidateTier.Active)}${ageText ? ` — modified ${ageText} ago` : ''}`;
+    ? formatString(strings.Treemap_File_SizeWithVersion, {
+      total: formatBytes(item.sizeBytes),
+      current: formatBytes(item.sizeBytes - item.versionSizeBytes),
+      version: formatBytes(item.versionSizeBytes),
+    })
+    : formatString(strings.Treemap_File_SizeUnmeasuredVersion, { bytes: formatBytes(item.sizeBytes) });
+  const ageSuffix = ageText ? formatString(strings.Treemap_File_ModifiedSuffix, { age: ageText }) : '';
+  return formatString(strings.Treemap_File_Tooltip, {
+    label: item.label,
+    sizeText,
+    tier: tierLabel(item.tier ?? CandidateTier.Active),
+    ageText: ageSuffix,
+  });
 }
 
 export interface TreemapProps {
@@ -103,7 +124,7 @@ export const Treemap: React.FC<TreemapProps> = ({ items, height = 420, onFolderC
     <div ref={containerRef} style={{ position: 'relative', width: '100%', height: `${height}px`, background: tokens.colorNeutralBackground2 }}>
       {measuring && (
         <div style={{ position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-          <Spinner size="small" label="Rendering treemap…" />
+          <Spinner size="small" label={strings.Treemap_Rendering} />
         </div>
       )}
       {rects.map((r) => {
@@ -178,16 +199,16 @@ export const Treemap: React.FC<TreemapProps> = ({ items, height = 420, onFolderC
               >
                 {r.kind === 'folder'
                   ? (r.sizeUnknown
-                    ? 'Size unknown'
-                    : `${r.sizeApproximate ? '≥ ' : ''}${formatBytes(r.sizeBytes)}${r.itemCount != null ? ` · ${r.itemCount} file${r.itemCount === 1 ? '' : 's'}` : ''}`)
+                    ? strings.Treemap_Detail_SizeUnknown
+                    : `${r.sizeApproximate ? '≥ ' : ''}${formatBytes(r.sizeBytes)}${r.itemCount != null ? formatString(r.itemCount === 1 ? strings.Treemap_Detail_FileCount_Singular : strings.Treemap_Detail_FileCount_Plural, { count: r.itemCount }) : ''}`)
                   : r.kind === 'other'
-                    ? `${formatBytes(r.sizeBytes)} combined`
+                    ? formatString(strings.Treemap_Other_SizeCombined, { total: formatBytes(r.sizeBytes) })
                     // The tier as text, not only as the cell's color. "≥"
                     // when version history isn't measured for this file (see
                     // cellTooltip) — not the same as a confirmed 0 B.
                     : r.versionSizeBytes != null
-                      ? `${tierText} · ${formatBytes(r.sizeBytes - r.versionSizeBytes)} + ${formatBytes(r.versionSizeBytes)} history`
-                      : `${tierText} · ≥ ${formatBytes(r.sizeBytes)}`}
+                      ? formatString(strings.Treemap_Detail_FileWithVersion, { tier: tierText, current: formatBytes(r.sizeBytes - r.versionSizeBytes), version: formatBytes(r.versionSizeBytes) })
+                      : formatString(strings.Treemap_Detail_FileWithoutVersion, { tier: tierText, bytes: formatBytes(r.sizeBytes) })}
               </Text>
             )}
           </div>
@@ -216,10 +237,10 @@ export interface TierLegendProps {
 // Report, which lists files only — no folder rollups to explain.
 export const TierLegend: React.FC<TierLegendProps> = ({ staleDays, veryStaleDays, showFolder = true }) => {
   const items: { color: string; label: string }[] = [
-    ...(showFolder ? [{ color: FOLDER_COLOR.light, label: 'Folder' }] : []),
-    { color: TIER_COLORS[CandidateTier.Active].light, label: `Active (< ${staleDays}d)` },
-    { color: TIER_COLORS[CandidateTier.Stale].light, label: `Stale (${staleDays}–${veryStaleDays - 1}d)` },
-    { color: TIER_COLORS[CandidateTier.VeryStale].light, label: `Very stale (${veryStaleDays}d+)` },
+    ...(showFolder ? [{ color: FOLDER_COLOR.light, label: strings.Treemap_Legend_Folder }] : []),
+    { color: TIER_COLORS[CandidateTier.Active].light, label: formatString(strings.Treemap_Legend_Active, { days: staleDays }) },
+    { color: TIER_COLORS[CandidateTier.Stale].light, label: formatString(strings.Treemap_Legend_Stale, { from: staleDays, to: veryStaleDays - 1 }) },
+    { color: TIER_COLORS[CandidateTier.VeryStale].light, label: formatString(strings.Treemap_Legend_VeryStale, { days: veryStaleDays }) },
   ];
   return (
     <div style={{ display: 'flex', gap: tokens.spacingHorizontalM, flexWrap: 'wrap', padding: `${tokens.spacingVerticalXS} 0` }}>

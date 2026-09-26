@@ -6,6 +6,8 @@ import { CandidateTier, FileEntry, FolderListRow, StorageReportSummary } from '.
 import { TIER_COLORS } from '../components/shared/tierBadge';
 import { formatBytes } from '../components/shared/formatBytes';
 import { isVersionHistoryIncomplete } from '../utils/versionCompleteness';
+import * as strings from 'SmartStorageAnalyzerWebPartStrings';
+import { formatString } from '../components/localeUtils';
 
 let excelModulePromise: Promise<typeof ExcelJS> | undefined;
 function loadExcelJS(): Promise<typeof ExcelJS> {
@@ -127,7 +129,7 @@ export class ExcelExportService {
     const ws = wb.addWorksheet('Summary');
 
     const title = ws.getCell('A1');
-    title.value = 'SharePoint Storage Report';
+    title.value = strings.Export_ReportTitle;
     title.font = { bold: true, size: 16, color: { argb: COLOR.titleFont } };
 
     // Total Storage Size is only meaningful once version history has actually
@@ -138,35 +140,35 @@ export class ExcelExportService {
     const floor = isVersionHistoryIncomplete(summary) ? '≥ ' : '';
     const sizeRows: [string, string | number][] = summary.versionHistoryIncluded
       ? [
-        ['Total Storage Size', `${floor}${formatBytes(summary.totalSizeBytes + (summary.totalVersionSizeBytes ?? 0))}`],
-        ['Current File Size', formatBytes(summary.totalSizeBytes)],
-        ['Version History Size', `${floor}${formatBytes(summary.totalVersionSizeBytes ?? 0)}`],
+        [strings.Export_TotalStorageSize, `${floor}${formatBytes(summary.totalSizeBytes + (summary.totalVersionSizeBytes ?? 0))}`],
+        [strings.Export_CurrentFileSize, formatBytes(summary.totalSizeBytes)],
+        [strings.Export_VersionHistorySize, `${floor}${formatBytes(summary.totalVersionSizeBytes ?? 0)}`],
       ]
       : [
-        ['Current File Size', formatBytes(summary.totalSizeBytes)],
+        [strings.Export_CurrentFileSize, formatBytes(summary.totalSizeBytes)],
       ];
 
     const BLANK: [string, string | number] = ['', ''];
 
     const data: [string, string | number][] = [
-      ['Site URL', siteUrl],
-      ['Generated', new Date().toLocaleString()],
-      ['Scan duration (s)', summary.durationSeconds.toFixed(1)],
-      ['Files scanned', totalEntries],
+      [strings.Export_SiteUrl, siteUrl],
+      [strings.Export_Generated, new Date().toLocaleString()],
+      [strings.Export_ScanDuration, summary.durationSeconds.toFixed(1)],
+      [strings.Export_FilesScanned, totalEntries],
       // Only added when the scan actually measured version history;
       // totalVersionCount === 0 is otherwise ambiguous between "no old
       // versions exist" and "wasn't measured".
       ...(summary.versionHistoryIncluded
-        ? ([['Version History Count (retained versions, est.)', summary.totalVersionCount ?? 0]] as [string, string | number][])
+        ? ([[strings.Export_VersionHistoryCount, summary.totalVersionCount ?? 0]] as [string, string | number][])
         : []),
       BLANK,
       ...sizeRows,
       BLANK,
-      ['Stale files (Stale)', summary.staleCount],
-      ['Stale size', formatBytes(summary.staleSizeBytes)],
+      [strings.Export_StaleFiles, summary.staleCount],
+      [strings.Export_StaleSize, formatBytes(summary.staleSizeBytes)],
       BLANK,
-      ['Very stale files (strong archival candidates)', summary.veryStaleCount],
-      ['Very stale size', formatBytes(summary.veryStaleSizeBytes)],
+      [strings.Export_VeryStaleFiles, summary.veryStaleCount],
+      [strings.Export_VeryStaleSize, formatBytes(summary.veryStaleSizeBytes)],
     ];
 
     data.forEach(([label, value], i) => {
@@ -194,9 +196,9 @@ export class ExcelExportService {
     // Version history column only added when the scan actually measured it —
     // otherwise every entry's versionSizeBytes is undefined and the column
     // would just be blank, misleadingly implying "confirmed zero".
-    const headers = ['Library', 'Path', 'Name', 'Current File Size', 'Current File Size (bytes)'];
-    if (includeVersionHistory) headers.push('Version History Size', 'Version History Size (bytes)', 'Version Count (est.)');
-    headers.push('Created', 'Modified', 'Age (days)', 'Author', 'Tier');
+    const headers = [strings.Export_Col_Library, strings.Export_Col_Path, strings.Export_Col_Name, strings.Export_CurrentFileSize, strings.Export_Col_CurrentFileSizeBytes];
+    if (includeVersionHistory) headers.push(strings.Export_VersionHistorySize, strings.Export_Col_VersionHistorySizeBytes, strings.Export_Col_VersionCount);
+    headers.push(strings.Export_Col_Created, strings.Export_Col_Modified, strings.Export_Col_AgeDays, strings.Export_Col_Author, strings.Export_Col_Tier);
     const headerRow = ws.getRow(1);
     headers.forEach((h, i) => {
       const cell = headerRow.getCell(i + 1);
@@ -269,9 +271,9 @@ export class ExcelExportService {
   }
 
   exportCsv(entries: FileEntry[], includeVersionHistory = false, siteUrl = ''): void {
-    const header = ['Library', 'Path', 'Name', 'Current File Size (bytes)'];
-    if (includeVersionHistory) header.push('Version History Size (bytes)', 'Version Count (est.)');
-    header.push('Created', 'Modified', 'Age (days)', 'Author', 'Tier');
+    const header = [strings.Export_Col_Library, strings.Export_Col_Path, strings.Export_Col_Name, strings.Export_Col_CurrentFileSizeBytes];
+    if (includeVersionHistory) header.push(strings.Export_Col_VersionHistorySizeBytes, strings.Export_Col_VersionCount);
+    header.push(strings.Export_Col_Created, strings.Export_Col_Modified, strings.Export_Col_AgeDays, strings.Export_Col_Author, strings.Export_Col_Tier);
     const rows: string[][] = [header];
     for (const e of entries) {
       const row = [e.libraryTitle, e.serverRelativeUrl, e.name, String(e.sizeBytes)];
@@ -292,20 +294,20 @@ export class ExcelExportService {
     const ws = wb.addWorksheet('Listing');
 
     const title = ws.getCell('A1');
-    title.value = `Folder Listing — ${contextLabel}`;
+    title.value = formatString(strings.Export_FolderListingTitle, { label: contextLabel });
     title.font = { bold: true, size: 14, color: { argb: COLOR.titleFont } };
 
     // Folders never get a real value here (no recursive version-history
     // rollup exists — see FolderListRow.versionSizeBytes) and render blank,
     // same as the in-app List view's '—'.
     // Same column order as the in-app List View table.
-    const headers = ['Type', 'Name'];
+    const headers = [strings.Export_Col_Type, strings.Export_Col_Name];
     // Total Storage Size only adds information once version history is in
     // the export — without it, it would just duplicate Current File Size.
-    if (includeVersionHistory) headers.push('Total Storage Size', 'Total Storage Size (bytes)');
-    headers.push('Current File Size', 'Current File Size (bytes)', 'Items');
-    if (includeVersionHistory) headers.push('Version History Size', 'Version History Size (bytes)', 'Version Count (est.)');
-    headers.push('Modified', 'Age (days)', 'Author', 'Status');
+    if (includeVersionHistory) headers.push(strings.Export_TotalStorageSize, strings.Export_Col_TotalStorageSizeBytes);
+    headers.push(strings.Export_CurrentFileSize, strings.Export_Col_CurrentFileSizeBytes, strings.Export_Col_Items);
+    if (includeVersionHistory) headers.push(strings.Export_VersionHistorySize, strings.Export_Col_VersionHistorySizeBytes, strings.Export_Col_VersionCount);
+    headers.push(strings.Export_Col_Modified, strings.Export_Col_AgeDays, strings.Export_Col_Author, strings.Export_Col_Status);
     const headerRow = ws.getRow(3);
     headers.forEach((h, i) => {
       const cell = headerRow.getCell(i + 1);
@@ -320,7 +322,7 @@ export class ExcelExportService {
     rows.forEach((r, idx) => {
       const row = ws.getRow(idx + 4);
       let col = 1;
-      row.getCell(col++).value = r.kind === 'folder' ? 'Folder' : 'File';
+      row.getCell(col++).value = r.kind === 'folder' ? strings.Export_TypeFolder : strings.Export_TypeFile;
       row.getCell(col++).value = r.name;
       // Folders never carry a version-history value (see FolderListRow.
       // versionSizeBytes) — only files do, so hasVersion is false for every
@@ -333,11 +335,11 @@ export class ExcelExportService {
         // content only), not a silent understatement — the "≥" mirrors the
         // in-app List view's treatment of the same gap.
         const totalFloor = folderFloor || (r.kind === 'file' && !hasVersion ? '≥ ' : '');
-        row.getCell(col++).value = r.sizeUnknown ? 'Unknown' : `${totalFloor}${formatBytes(totalBytes)}`;
+        row.getCell(col++).value = r.sizeUnknown ? strings.Export_Unknown : `${totalFloor}${formatBytes(totalBytes)}`;
         row.getCell(col++).value = totalBytes;
       }
       // "Unknown", as in the app, rather than a misleading "0 B".
-      row.getCell(col++).value = r.sizeUnknown ? 'Unknown' : `${r.kind === 'folder' && r.sizeApproximate ? '≥ ' : ''}${formatBytes(r.sizeBytes)}`;
+      row.getCell(col++).value = r.sizeUnknown ? strings.Export_Unknown : `${r.kind === 'folder' && r.sizeApproximate ? '≥ ' : ''}${formatBytes(r.sizeBytes)}`;
       row.getCell(col++).value = r.sizeBytes;
       row.getCell(col++).value = r.itemCount ?? '';
       if (includeVersionHistory) {
@@ -376,16 +378,16 @@ export class ExcelExportService {
 
   exportFolderListingCsv(rows: FolderListRow[], contextLabel: string, includeVersionHistory = false): void {
     // Same column order as the in-app List View table and the Excel export.
-    const header = ['Type', 'Name'];
-    if (includeVersionHistory) header.push('Total Storage Size (bytes)');
-    header.push('Current File Size (bytes)', 'Items');
-    if (includeVersionHistory) header.push('Version History Size (bytes)', 'Version Count (est.)');
-    header.push('Modified', 'Age (days)', 'Author', 'Status');
+    const header = [strings.Export_Col_Type, strings.Export_Col_Name];
+    if (includeVersionHistory) header.push(strings.Export_Col_TotalStorageSizeBytes);
+    header.push(strings.Export_Col_CurrentFileSizeBytes, strings.Export_Col_Items);
+    if (includeVersionHistory) header.push(strings.Export_Col_VersionHistorySizeBytes, strings.Export_Col_VersionCount);
+    header.push(strings.Export_Col_Modified, strings.Export_Col_AgeDays, strings.Export_Col_Author, strings.Export_Col_Status);
     const out: string[][] = [header];
     for (const r of rows) {
       // Folders never carry a version-history value — files only.
       const hasVersion = r.versionSizeBytes != null;
-      const row = [r.kind === 'folder' ? 'Folder' : 'File', r.name];
+      const row = [r.kind === 'folder' ? strings.Export_TypeFolder : strings.Export_TypeFile, r.name];
       if (includeVersionHistory) {
         row.push(String(r.sizeBytes + (hasVersion ? r.versionSizeBytes! : 0)));
       }

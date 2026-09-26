@@ -1,4 +1,5 @@
 import { CandidateTier } from '../../models/models';
+import * as strings from 'SmartStorageAnalyzerWebPartStrings';
 
 // Fixed status palette (never themed — same hex regardless of site brand
 // color) shared between the file-list table badges, the Excel export fill
@@ -8,20 +9,20 @@ export const TIER_COLORS: Record<CandidateTier, { light: string; dark: string; l
   [CandidateTier.Active]: {
     light: '#0ca30c',
     dark: '#0ca30c',
-    label: 'Active',
-    description: 'Modified recently',
+    label: strings.Tier_Active_Label,
+    description: strings.Tier_Active_Description,
   },
   [CandidateTier.Stale]: {
     light: '#fab219',
     dark: '#fab219',
-    label: 'Stale',
-    description: 'Candidate for review',
+    label: strings.Tier_Stale_Label,
+    description: strings.Tier_Stale_Description,
   },
   [CandidateTier.VeryStale]: {
     light: '#d03b3b',
     dark: '#d03b3b',
-    label: 'Very stale',
-    description: 'Strong archival candidate',
+    label: strings.Tier_VeryStale_Label,
+    description: strings.Tier_VeryStale_Description,
   },
 };
 

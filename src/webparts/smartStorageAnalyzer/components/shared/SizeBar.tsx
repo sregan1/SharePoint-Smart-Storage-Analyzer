@@ -1,5 +1,7 @@
 import * as React from 'react';
 import { tokens } from '@fluentui/react-components';
+import * as strings from 'SmartStorageAnalyzerWebPartStrings';
+import { formatString } from '../localeUtils';
 
 export interface SizeBarProps {
   value: number;
@@ -22,7 +24,7 @@ export const SizeBar: React.FC<SizeBarProps> = ({ value, max, color }) => {
         overflow: 'hidden',
       }}
       role="img"
-      aria-label={`${pct.toFixed(0)}% of largest`}
+      aria-label={formatString(strings.SizeBar_AriaLabel, { pct: pct.toFixed(0) })}
     >
       <div
         style={{

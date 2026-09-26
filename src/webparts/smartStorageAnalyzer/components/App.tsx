@@ -12,6 +12,7 @@ import {
 } from '@fluentui/react-components';
 import { Settings24Regular, HardDrive24Regular } from '@fluentui/react-icons';
 import { WebPartContext } from '@microsoft/sp-webpart-base';
+import * as strings from 'SmartStorageAnalyzerWebPartStrings';
 
 import { StorageAnalyzerService } from '../services/StorageAnalyzerService';
 import { ExcelExportService } from '../services/ExcelExportService';
@@ -147,7 +148,7 @@ class ErrorBoundary extends React.Component<ErrorBoundaryProps, { error: Error |
             borderRadius: '4px', margin: '8px',
           }}
         >
-          <strong style={{ fontSize: '14px' }}>Smart Storage Analyzer — something went wrong</strong>
+          <strong style={{ fontSize: '14px' }}>{strings.App_ErrorBoundary_Title}</strong>
           <div style={{ marginTop: '8px' }}>{error.message || String(error)}</div>
           {this.props.onReset && (
             <Button
@@ -155,11 +156,11 @@ class ErrorBoundary extends React.Component<ErrorBoundaryProps, { error: Error |
               style={{ marginTop: '12px' }}
               onClick={() => { this.setState({ error: null }); this.props.onReset!(); }}
             >
-              Back to Home
+              {strings.App_ErrorBoundary_BackToHome}
             </Button>
           )}
           <details style={{ marginTop: '12px' }}>
-            <summary style={{ cursor: 'pointer' }}>Technical details</summary>
+            <summary style={{ cursor: 'pointer' }}>{strings.App_ErrorBoundary_TechnicalDetails}</summary>
             <pre style={{
               fontFamily: 'Consolas, monospace', fontSize: '11px', whiteSpace: 'pre-wrap',
               overflowWrap: 'anywhere', padding: '8px', margin: '4px 0',
@@ -270,15 +271,15 @@ export const App: React.FC<AppProps> = ({ context, sp, excel, defaultView, brand
           <div style={{ display: 'flex', alignItems: 'center', gap: tokens.spacingHorizontalS, flexShrink: 0 }}>
             <HardDrive24Regular style={{ color: headerText, fontSize: '20px' }} />
             <Text style={{ color: headerText, fontWeight: tokens.fontWeightSemibold, whiteSpace: 'nowrap' }}>
-              SharePoint Smart Storage Analyzer
+              {strings.App_HeaderTitle}
             </Text>
           </div>
 
           <Button
             appearance="transparent"
             icon={<Settings24Regular style={{ color: headerText }} />}
-            aria-label="Settings"
-            title="Settings"
+            aria-label={strings.App_SettingsAriaLabel}
+            title={strings.App_SettingsAriaLabel}
             onClick={handleOpenSettings}
           />
         </div>
@@ -289,8 +290,8 @@ export const App: React.FC<AppProps> = ({ context, sp, excel, defaultView, brand
           <Button
             appearance="transparent"
             icon={<Settings24Regular />}
-            aria-label="Settings"
-            title="Settings"
+            aria-label={strings.App_SettingsAriaLabel}
+            title={strings.App_SettingsAriaLabel}
             onClick={handleOpenSettings}
           />
         </div>
@@ -312,8 +313,8 @@ export const App: React.FC<AppProps> = ({ context, sp, excel, defaultView, brand
         }}>
           <span style={{ flexShrink: 0, fontSize: '16px' }}>⚠️</span>
           <span>
-            <strong>Site Owner access required — </strong>
-            Storage totals rely on the same right as classic Site Settings → Storage Metrics. Contact a site owner if you have questions.
+            <strong>{strings.App_SiteOwnerWarning_Title}</strong>
+            {strings.App_SiteOwnerWarning_Body}
           </span>
         </div>
       )}

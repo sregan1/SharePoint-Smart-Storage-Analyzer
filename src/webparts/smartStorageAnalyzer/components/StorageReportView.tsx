@@ -37,6 +37,8 @@ import { useIncludeVersionHistory } from './shared/useIncludeVersionHistory';
 import { InfoTip } from './shared/InfoTip';
 import { diffReports } from '../utils/reportDiff';
 import { isVersionHistoryIncomplete, usedVersionStrategy } from '../utils/versionCompleteness';
+import * as strings from 'SmartStorageAnalyzerWebPartStrings';
+import { formatString } from './localeUtils';
 
 const useStyles = makeStyles({
   root: {
@@ -106,17 +108,12 @@ const reportHistory = new ReportHistoryService();
 // HTML: "\n\n" collapses to a single space and the whole thing arrives as one
 // dense paragraph.
 const STAGE_NOTES: Record<ScanProgress['stage'], string> = {
-  'discovering': 'Reading the site structure and the list of libraries to scan.',
-  'items': 'One flat read per library — about one request per 5,000 items, regardless of how the '
-    + 'folders are arranged.',
-  'version-probe': 'Working out how this list will report version-history size, before spending '
-    + 'anything on measuring it.',
-  'version-bulk': 'Reading version-history size in bulk. Each page covers 5,000 items.',
-  'version-validate': 'Checking the bulk figures against each file\'s version number, so an '
-    + 'unpopulated field can\'t be reported as a confident zero.',
-  'version-per-file': 'This list doesn\'t report version-history size in bulk, so each file is '
-    + 'measured individually. Cancel is safe — everything collected so far is kept, and anything '
-    + 'unmeasured is reported as unmeasured rather than zero.',
+  'discovering': strings.Report_Stage_Discovering,
+  'items': strings.Report_Stage_Items,
+  'version-probe': strings.Report_Stage_VersionProbe,
+  'version-bulk': strings.Report_Stage_VersionBulk,
+  'version-validate': strings.Report_Stage_VersionValidate,
+  'version-per-file': strings.Report_Stage_VersionPerFile,
 };
 
 const ScanStatusTooltip: React.FC<{
@@ -128,24 +125,24 @@ const ScanStatusTooltip: React.FC<{
     <div>
       {/* The liveness number. It is the only counter that moves during a stage
           with no denominator, so it is what proves the scan isn't hung. */}
-      {requestCount.toLocaleString()} SharePoint requests so far
+      {formatString(strings.Report_Tooltip_RequestsSoFar, { count: requestCount.toLocaleString() })}
       {progress.itemsFetched != null && (
         <>
           <br />
-          {progress.itemsFetched.toLocaleString()} items read
-          {progress.totalItemsHint ? ` of roughly ${progress.totalItemsHint.toLocaleString()} expected` : ''}
+          {formatString(strings.Report_Tooltip_ItemsRead, { count: progress.itemsFetched.toLocaleString() })}
+          {progress.totalItemsHint ? formatString(strings.Report_Tooltip_ItemsReadOfExpected, { total: progress.totalItemsHint.toLocaleString() }) : ''}
         </>
       )}
       <br />
-      {progress.scanned.toLocaleString()} of {progress.filesSeen.toLocaleString()} files added to the report
+      {formatString(strings.Report_Tooltip_FilesAdded, { scanned: progress.scanned.toLocaleString(), total: progress.filesSeen.toLocaleString() })}
     </div>
     {(progress.skippedVersions > 0 || progress.unmeasuredVersions > 0) && (
       <div>
         {progress.skippedVersions > 0 && (
-          <>{progress.skippedVersions.toLocaleString()} version lookups failed<br /></>
+          <>{formatString(strings.Report_Tooltip_VersionLookupsFailed, { count: progress.skippedVersions.toLocaleString() })}<br /></>
         )}
         {progress.unmeasuredVersions > 0 && (
-          <>{progress.unmeasuredVersions.toLocaleString()} files left unmeasured</>
+          <>{formatString(strings.Report_Tooltip_FilesLeftUnmeasured, { count: progress.unmeasuredVersions.toLocaleString() })}</>
         )}
       </div>
     )}
@@ -279,7 +276,7 @@ export const StorageReportView: React.FC<StorageReportViewProps> = ({
     scannedRef.current = 0;
     setProgress({
       stage: 'discovering',
-      stageLabel: 'Starting scan',
+      stageLabel: strings.Report_InitialStageLabel,
       stageKey: 'start',
       libsDone: 0,
       libsTotal: 0,
@@ -349,23 +346,19 @@ export const StorageReportView: React.FC<StorageReportViewProps> = ({
             // exactly that, because "could not be saved" would imply the whole
             // report was lost when the summary and every comparison still work.
             setWarning(quotaExceeded
-              ? 'Scan completed and saved, but browser storage was full so this report\'s file '
-                + 'listing was not kept — its totals and comparisons are unaffected. Delete an older '
-                + 'report to free space.'
-              : 'Scan completed and saved, but this report\'s file listing was too large for the '
-                + 'browser to store — its totals and comparisons are unaffected. Export it now if you '
-                + 'need the file-level detail later.');
+              ? strings.Report_Warning_ListingNotSaved_Quota
+              : strings.Report_Warning_ListingNotSaved_TooLarge);
           }
           loadHistory();
         } catch (err: any) {
           // The scan itself succeeded and its results are already on
           // screen — only the save to history failed. Reporting this as
           // "Scan failed" would be actively misleading.
-          if (mountedRef.current) setWarning(`Scan completed, but the report could not be saved to history: ${err?.message ?? String(err)}`);
+          if (mountedRef.current) setWarning(formatString(strings.Report_Warning_ScanSavedFailed, { message: err?.message ?? String(err) }));
         }
       }
     } catch (err: any) {
-      if (mountedRef.current) setError(`Scan failed: ${err?.message ?? String(err)}`);
+      if (mountedRef.current) setError(formatString(strings.Report_Error_ScanFailed, { message: err?.message ?? String(err) }));
     } finally {
       clearInterval(timer);
       abortControllerRef.current = null;
@@ -384,7 +377,7 @@ export const StorageReportView: React.FC<StorageReportViewProps> = ({
         setCompareIds((prev) => prev.filter((x) => x !== id));
         loadHistory();
       })
-      .catch((err: any) => setError(`Could not delete the saved scan: ${err?.message ?? String(err)}`));
+      .catch((err: any) => setError(formatString(strings.Report_Error_DeleteFailed, { message: err?.message ?? String(err) })));
   };
 
   const handleCancel = (): void => {
@@ -417,7 +410,7 @@ export const StorageReportView: React.FC<StorageReportViewProps> = ({
     setExcelExporting(true);
     afterPaint(() => {
       excel.export(filteredEntries, summary, effectiveSiteUrl)
-        .catch((err: any) => setError(`Excel export failed: ${err?.message ?? String(err)}`))
+        .catch((err: any) => setError(formatString(strings.Report_Error_ExcelExportFailed, { message: err?.message ?? String(err) })))
         .finally(() => setExcelExporting(false));
     });
   };
@@ -430,7 +423,7 @@ export const StorageReportView: React.FC<StorageReportViewProps> = ({
       try {
         excel.exportCsv(filteredEntries, !!summary?.versionHistoryIncluded, effectiveSiteUrl);
       } catch (err: any) {
-        setError(`CSV export failed: ${err?.message ?? String(err)}`);
+        setError(formatString(strings.Report_Error_CsvExportFailed, { message: err?.message ?? String(err) }));
       } finally {
         setCsvExporting(false);
       }
@@ -448,10 +441,10 @@ export const StorageReportView: React.FC<StorageReportViewProps> = ({
     : (summary ? !!summary.versionHistoryIncluded : includeVersions);
 
   const columns: StorageTableColumn<FileEntry>[] = [
-    { key: 'library', header: 'Library', sortValue: (e) => e.libraryTitle, render: (e) => <span>{e.libraryTitle}</span> },
+    { key: 'library', header: strings.Report_Col_Library, sortValue: (e) => e.libraryTitle, render: (e) => <span>{e.libraryTitle}</span> },
     {
       key: 'name',
-      header: 'Name',
+      header: strings.Report_Col_Name,
       sortValue: (e) => e.name,
       render: (e) => (
         <span style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
@@ -460,30 +453,30 @@ export const StorageReportView: React.FC<StorageReportViewProps> = ({
         </span>
       ),
     },
-    { key: 'size', header: 'Current File Size', align: 'right', sortValue: (e) => e.sizeBytes, render: (e) => <span>{formatBytes(e.sizeBytes)}</span> },
+    { key: 'size', header: strings.Report_Col_CurrentFileSize, align: 'right', sortValue: (e) => e.sizeBytes, render: (e) => <span>{formatBytes(e.sizeBytes)}</span> },
     ...(effectiveVersionHistoryIncluded ? [{
       key: 'versionSize',
-      header: 'Version History Size',
+      header: strings.Report_Col_VersionHistorySize,
       align: 'right' as const,
       sortValue: (e: FileEntry) => e.versionSizeBytes ?? -1,
       render: (e: FileEntry) => <span>{e.versionSizeBytes !== undefined ? formatBytes(e.versionSizeBytes) : '—'}</span>,
     }, {
       key: 'versionCount',
-      header: 'Version Count (est.)',
+      header: strings.Report_Col_VersionCount,
       align: 'right' as const,
       sortValue: (e: FileEntry) => e.versionCount ?? -1,
       render: (e: FileEntry) => <span>{e.versionCount !== undefined ? e.versionCount : '—'}</span>,
     }] : []),
     {
       key: 'modified',
-      header: 'Modified',
+      header: strings.Report_Col_Modified,
       sortValue: (e) => e.timeLastModified,
-      render: (e) => <span>{new Date(e.timeLastModified).toLocaleDateString()} ({formatAge(e.ageDays)} ago)</span>,
+      render: (e) => <span>{new Date(e.timeLastModified).toLocaleDateString()}{formatString(strings.Report_ModifiedAgo, { age: formatAge(e.ageDays) })}</span>,
     },
-    { key: 'author', header: 'Author', sortValue: (e) => e.authorDisplayName ?? '', render: (e) => <span>{e.authorDisplayName ?? '—'}</span> },
+    { key: 'author', header: strings.Report_Col_Author, sortValue: (e) => e.authorDisplayName ?? '', render: (e) => <span>{e.authorDisplayName ?? '—'}</span> },
     {
       key: 'tier',
-      header: 'Status',
+      header: strings.Report_Col_Status,
       sortValue: (e) => e.ageDays,
       render: (e) => (
         <span style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
@@ -630,10 +623,10 @@ export const StorageReportView: React.FC<StorageReportViewProps> = ({
     const skippedFolders = summary.skippedFolders ?? 0;
     const skippedSites = summary.skippedSites ?? 0;
     if (skippedFolders > 0) {
-      partialWarnings.push(`${skippedFolders} folder${skippedFolders === 1 ? '' : 's'} could not be read and ${skippedFolders === 1 ? 'was' : 'were'} skipped`);
+      partialWarnings.push(formatString(skippedFolders === 1 ? strings.Report_PartialWarning_SkippedFolders_Singular : strings.Report_PartialWarning_SkippedFolders_Plural, { count: skippedFolders }));
     }
     if (skippedSites > 0) {
-      partialWarnings.push(`${skippedSites} subsite${skippedSites === 1 ? '' : 's'} could not be accessed and ${skippedSites === 1 ? 'was' : 'were'} skipped`);
+      partialWarnings.push(formatString(skippedSites === 1 ? strings.Report_PartialWarning_SkippedSites_Singular : strings.Report_PartialWarning_SkippedSites_Plural, { count: skippedSites }));
     }
     // Version-history gaps, reported as TWO separate conditions because they
     // have two different remedies. Without this, a run that hit either one
@@ -645,8 +638,7 @@ export const StorageReportView: React.FC<StorageReportViewProps> = ({
     if (summary.versionHistoryIncluded && skippedVersions > 0) {
       // Attempted and failed — retrying, or lowering concurrency, may fix it.
       partialWarnings.push(
-        `version history could not be measured for ${skippedVersions.toLocaleString()} file${skippedVersions === 1 ? '' : 's'} ` +
-        '(excluded from the version history totals below, not counted as zero)',
+        formatString(skippedVersions === 1 ? strings.Report_PartialWarning_SkippedVersions_Singular : strings.Report_PartialWarning_SkippedVersions_Plural, { count: skippedVersions.toLocaleString() }),
       );
     }
     if (summary.versionHistoryIncluded && unmeasuredVersions > 0) {
@@ -655,10 +647,10 @@ export const StorageReportView: React.FC<StorageReportViewProps> = ({
       // where re-running genuinely is the fix. That is the one thing the legacy
       // versionScanMode field is still read for.
       partialWarnings.push(
-        `${unmeasuredVersions.toLocaleString()} file${unmeasuredVersions === 1 ? '' : 's'} were not measured for version history`
+        formatString(unmeasuredVersions === 1 ? strings.Report_PartialWarning_UnmeasuredVersions_Singular : strings.Report_PartialWarning_UnmeasuredVersions_Plural, { count: unmeasuredVersions.toLocaleString() })
         + (summary.versionScanMode === 'quick'
-          ? ' — this saved report ran in the old Quick mode, which measured only the largest files per library; re-run to measure them all'
-          : ' (reported as unmeasured, never counted as zero)'),
+          ? strings.Report_PartialWarning_UnmeasuredVersions_QuickModeSuffix
+          : strings.Report_PartialWarning_UnmeasuredVersions_DefaultSuffix),
       );
     }
   }
@@ -677,7 +669,7 @@ export const StorageReportView: React.FC<StorageReportViewProps> = ({
     try {
       loaded = await reportHistory.getEntries(h.id);
     } catch (err: any) {
-      setError(`Could not load this report's file listing: ${err?.message ?? String(err)}`);
+      setError(formatString(strings.Report_Error_LoadListingFailed, { message: err?.message ?? String(err) }));
       setPendingViewId(null);
       return;
     }
@@ -694,11 +686,7 @@ export const StorageReportView: React.FC<StorageReportViewProps> = ({
       if (!loaded) {
         // Summary and comparisons are intact; only the per-file rows are gone.
         // Said plainly, because an empty table with no explanation reads as a bug.
-        setWarning(
-          'This report\'s file listing is no longer stored — it was removed to make room for newer '
-          + 'reports. Its totals below are complete and unaffected; re-run the scan to get the file '
-          + 'list back.',
-        );
+        setWarning(strings.Report_Warning_ListingEvicted);
       }
       setPendingViewId(null);
     });
@@ -707,8 +695,8 @@ export const StorageReportView: React.FC<StorageReportViewProps> = ({
   return (
     <div className={styles.root}>
       <div className={styles.header}>
-        <Button appearance="subtle" icon={<ArrowLeft24Regular />} onClick={onBack} aria-label="Back to home" />
-        <Title3>Storage Report</Title3>
+        <Button appearance="subtle" icon={<ArrowLeft24Regular />} onClick={onBack} aria-label={strings.Report_BackAria} />
+        <Title3>{strings.Report_Title}</Title3>
         {/* Scan history can sit well below a large results table (up to 200
             rows, plus the size tiles and progress area above them) — this
             jumps straight to it instead of making the user scroll past all
@@ -720,7 +708,7 @@ export const StorageReportView: React.FC<StorageReportViewProps> = ({
           onClick={() => historyRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })}
           style={{ marginLeft: 'auto' }}
         >
-          View Scan History
+          {strings.Report_ViewHistoryButton}
         </Button>
       </div>
 
@@ -737,8 +725,8 @@ export const StorageReportView: React.FC<StorageReportViewProps> = ({
       {(canceledNotice || partialWarnings.length > 0) && (
         <MessageBar intent="warning" style={{ marginBottom: tokens.spacingVerticalM }}>
           <MessageBarBody>
-            {canceledNotice && 'Scan canceled — showing partial results collected before cancellation. '}
-            {partialWarnings.length > 0 && `Results are partial: ${partialWarnings.join('; ')}.`}
+            {canceledNotice && strings.Report_CanceledPrefix}
+            {partialWarnings.length > 0 && formatString(strings.Report_PartialResultsPrefix, { details: partialWarnings.join('; ') })}
             {!!summary?.skippedFolderDetails?.length && (
               <>
                 {' '}
@@ -748,7 +736,7 @@ export const StorageReportView: React.FC<StorageReportViewProps> = ({
                   onClick={() => setShowSkippedDetails((v) => !v)}
                   style={{ padding: 0, minWidth: 'unset', height: 'auto', verticalAlign: 'baseline' }}
                 >
-                  {showSkippedDetails ? 'Hide details' : 'Show details'}
+                  {showSkippedDetails ? strings.Report_HideDetailsButton : strings.Report_ShowDetailsButton}
                 </Button>
               </>
             )}
@@ -760,8 +748,8 @@ export const StorageReportView: React.FC<StorageReportViewProps> = ({
         <div className={styles.statTile} style={{ marginBottom: tokens.spacingVerticalM }}>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: tokens.spacingVerticalXS }}>
             <Text weight="semibold">
-              Skipped folders{(summary.skippedFolders ?? 0) > summary.skippedFolderDetails.length
-                ? ` (showing first ${summary.skippedFolderDetails.length} of ${summary.skippedFolders})`
+              {strings.Report_SkippedFoldersHeading}{(summary.skippedFolders ?? 0) > summary.skippedFolderDetails.length
+                ? formatString(strings.Report_SkippedFoldersShowingFirst, { shown: summary.skippedFolderDetails.length, total: summary.skippedFolders })
                 : ''}
             </Text>
             <Button
@@ -772,7 +760,7 @@ export const StorageReportView: React.FC<StorageReportViewProps> = ({
                 navigator.clipboard?.writeText(text).catch(() => { /* clipboard unavailable — ignore */ });
               }}
             >
-              Copy to clipboard
+              {strings.Report_CopyToClipboardButton}
             </Button>
           </div>
           <div style={{ maxHeight: '240px', overflowY: 'auto', fontSize: tokens.fontSizeBase200 }}>
@@ -787,20 +775,20 @@ export const StorageReportView: React.FC<StorageReportViewProps> = ({
       )}
 
       <div className={styles.row}>
-        <Checkbox label="Include subsites" checked={subsites} onChange={(_, d) => setSubsites(!!d.checked)} disabled={scanning} />
-        <Checkbox label="Include hidden/system libraries" checked={hidden} onChange={(_, d) => setHidden(!!d.checked)} disabled={scanning} />
+        <Checkbox label={strings.Report_IncludeSubsitesLabel} checked={subsites} onChange={(_, d) => setSubsites(!!d.checked)} disabled={scanning} />
+        <Checkbox label={strings.Report_IncludeHiddenLabel} checked={hidden} onChange={(_, d) => setHidden(!!d.checked)} disabled={scanning} />
         <Checkbox
-          label="Include Version History Size"
+          label={strings.Report_IncludeVersionsLabel}
           checked={includeVersions}
           onChange={(_, d) => setIncludeVersions(!!d.checked)}
           disabled={scanning}
         />
         <Button appearance="primary" onClick={handleScan} disabled={scanning}>
-          {scanning ? 'Scanning…' : 'Run scan'}
+          {scanning ? strings.Report_ScanningButton : strings.Report_RunScanButton}
         </Button>
         {scanning && (
           <Button appearance="secondary" onClick={handleCancel} disabled={cancelRequested}>
-            {cancelRequested ? 'Canceling…' : 'Cancel'}
+            {cancelRequested ? strings.Report_CancelingButton : strings.Report_CancelButton}
           </Button>
         )}
       </div>
@@ -817,7 +805,7 @@ export const StorageReportView: React.FC<StorageReportViewProps> = ({
             {progress.stageLabel}
             {/* Em dash reserved for the stage/target relation, so the hierarchy
                 reads without being read. */}
-            {progress.libraryTitle ? ` — ${progress.libraryTitle}` : ''}
+            {progress.libraryTitle ? formatString(strings.Report_LibraryPrefix, { title: progress.libraryTitle }) : ''}
           </Text>
 
           {/* Line 2 is REPLACED, not appended to, while paused. During a
@@ -833,25 +821,25 @@ export const StorageReportView: React.FC<StorageReportViewProps> = ({
             }}
           >
             {cancelRequested
-              ? 'Stopping — finishing the request already in flight…'
+              ? strings.Report_StoppingMessage
               : throttled
-                ? `Paused — SharePoint is throttling requests. Waiting for it to allow more… (${throttleWait}s)`
-                : (progress.detail ?? ' ')}
+                ? formatString(strings.Report_ThrottledMessage, { seconds: throttleWait })
+                : (progress.detail ?? ' ')}
           </Text>
 
           <Text style={{ display: 'block', fontSize: tokens.fontSizeBase200, color: tokens.colorNeutralForeground3 }}>
-            {progress.libsTotal > 0 && `${progress.libsDone} of ${progress.libsTotal} libraries · `}
+            {progress.libsTotal > 0 && formatString(strings.Report_LibrariesProgress, { done: progress.libsDone, total: progress.libsTotal })}
             {/* filesSeen, not `scanned` — files are identified the moment each
                 page lands, whereas entries can only be published once their
                 version sizes are final, so `scanned` sits at 0 for a whole
                 library and reads as a stalled scan. The committed count is in
                 the hover. */}
-            {progress.filesSeen.toLocaleString()} files found
+            {formatString(strings.Report_FilesFound, { count: progress.filesSeen.toLocaleString() })}
             {' · '}{formatElapsed(elapsed)}
-            {etaSeconds != null && ` · ~${formatDuration(etaSeconds)} left`}
+            {etaSeconds != null && formatString(strings.Report_EtaSuffix, { duration: formatDuration(etaSeconds) })}
             {' '}
             <InfoTip
-              label="Scan details"
+              label={strings.Report_ScanDetailsLabel}
               content={{ children: <ScanStatusTooltip progress={progress} requestCount={requestCount} /> }}
             />
           </Text>
@@ -862,8 +850,8 @@ export const StorageReportView: React.FC<StorageReportViewProps> = ({
         <>
           {viewedReport && (
             <Text style={{ display: 'block', color: tokens.colorNeutralForeground3, marginBottom: tokens.spacingVerticalS }}>
-              Viewing saved scan from {new Date(viewedReport.timestamp).toLocaleString()} — {siteLabel(viewedReport.siteUrl)}
-              {viewedReport.listingEvicted ? ' (file listing no longer stored — totals are complete)' : ''}
+              {formatString(strings.Report_ViewingSavedScan, { timestamp: new Date(viewedReport.timestamp).toLocaleString(), site: siteLabel(viewedReport.siteUrl) })}
+              {viewedReport.listingEvicted ? strings.Report_ListingEvictedNote : ''}
             </Text>
           )}
 
@@ -871,12 +859,12 @@ export const StorageReportView: React.FC<StorageReportViewProps> = ({
             {summary.versionHistoryIncluded && (
               <div className={styles.totalTile}>
                 <Text style={{ fontSize: tokens.fontSizeBase200, color: tokens.colorNeutralForeground3 }}>
-                  Total Storage Size{' '}
+                  {strings.Report_TotalStorageSizeLabel}{' '}
                   <InfoTip
-                    label="About Total Storage Size"
+                    label={strings.Report_TotalStorageSizeInfoLabel}
                     content={versionIncomplete
-                      ? 'Current File Size plus Version History Size combined. Some files\' version history could not be measured, so this is a floor — the real total is at least this much.'
-                      : 'Current File Size plus Version History Size combined — every byte the scanned files consume, current content and retained older versions together.'}
+                      ? strings.Report_TotalStorageSizeInfo_Incomplete
+                      : strings.Report_TotalStorageSizeInfo_Complete}
                   />
                 </Text>
                 <Text weight="bold" style={{ display: 'block', fontSize: tokens.fontSizeBase600, color: tokens.colorBrandForeground1 }}>
@@ -886,10 +874,10 @@ export const StorageReportView: React.FC<StorageReportViewProps> = ({
             )}
             <div className={`${styles.statTile} ${styles.sizeTile}`}>
               <Text style={{ fontSize: tokens.fontSizeBase200, color: tokens.colorNeutralForeground3 }}>
-                Current File Size{' '}
+                {strings.Report_CurrentFileSizeLabel}{' '}
                 <InfoTip
-                  label="About Current File Size"
-                  content="Sum of every scanned file's current content only — not an estimate, and never includes version history, whether or not that option was enabled for this scan. See Version History Size (when shown) for that additional storage."
+                  label={strings.Report_CurrentFileSizeInfoLabel}
+                  content={strings.Report_CurrentFileSizeInfo}
                 />
               </Text>
               <Text weight="semibold" style={{ display: 'block', fontSize: tokens.fontSizeBase500 }}>{formatBytes(summary.totalSizeBytes)}</Text>
@@ -898,10 +886,10 @@ export const StorageReportView: React.FC<StorageReportViewProps> = ({
               <>
                 <div className={`${styles.statTile} ${styles.sizeTile}`}>
                   <Text style={{ fontSize: tokens.fontSizeBase200, color: tokens.colorNeutralForeground3 }}>
-                    Version History Size{' '}
+                    {strings.Report_VersionHistorySizeLabel}{' '}
                     <InfoTip
-                      label="About Version History Size"
-                      content="Storage used by older, retained versions of files (SharePoint's version history), on top of the current file content already counted in Current File Size. This is additional storage consumed in the library."
+                      label={strings.Report_VersionHistorySizeInfoLabel}
+                      content={strings.Report_VersionHistorySizeInfo}
                     />
                   </Text>
                   <Text weight="semibold" style={{ display: 'block', fontSize: tokens.fontSizeBase500, color: tokens.colorBrandForeground1 }}>{versionIncomplete ? '≥ ' : ''}{formatBytes(summary.totalVersionSizeBytes ?? 0)}</Text>
@@ -909,7 +897,7 @@ export const StorageReportView: React.FC<StorageReportViewProps> = ({
                       already had; this is just its sum, same treatment as the
                       size total above. */}
                   <Text style={{ display: 'block', fontSize: tokens.fontSizeBase200, color: tokens.colorNeutralForeground3 }}>
-                    {(summary.totalVersionCount ?? 0).toLocaleString()} retained version{summary.totalVersionCount === 1 ? '' : 's'}
+                    {formatString(summary.totalVersionCount === 1 ? strings.Report_RetainedVersions_Singular : strings.Report_RetainedVersions_Plural, { count: (summary.totalVersionCount ?? 0).toLocaleString() })}
                   </Text>
                   {/* How this number was obtained, when it wasn't the free bulk
                       field. Worth surfacing because the difference between the
@@ -925,13 +913,13 @@ export const StorageReportView: React.FC<StorageReportViewProps> = ({
                   {usedVersionStrategy(summary, 'per-file') && (
                     <Text style={{ display: 'block', fontSize: tokens.fontSizeBase200, color: tokens.colorNeutralForeground3 }}>
                       {(summary.unmeasuredVersions ?? 0) > 0
-                        ? 'measured per file — incomplete, so this is a floor'
-                        : 'measured per file — all files with versions'}
+                        ? strings.Report_MeasuredPerFile_Incomplete
+                        : strings.Report_MeasuredPerFile_Complete}
                     </Text>
                   )}
                   {usedVersionStrategy(summary, 'none') && (
                     <Text style={{ display: 'block', fontSize: tokens.fontSizeBase200, color: tokens.colorPaletteMarigoldForeground1 }}>
-                      incomplete — no version-history source available for at least one library
+                      {strings.Report_MeasuredPerFile_None}
                     </Text>
                   )}
                 </div>
@@ -941,27 +929,27 @@ export const StorageReportView: React.FC<StorageReportViewProps> = ({
 
           <div className={styles.summaryGrid}>
             <div className={styles.statTile}>
-              <Text style={{ fontSize: tokens.fontSizeBase200, color: tokens.colorNeutralForeground3 }}>Files scanned</Text>
+              <Text style={{ fontSize: tokens.fontSizeBase200, color: tokens.colorNeutralForeground3 }}>{strings.Report_FilesScannedLabel}</Text>
               <Text weight="semibold" style={{ display: 'block', fontSize: tokens.fontSizeBase500 }}>{summary.totalFiles}</Text>
             </div>
             <div className={styles.statTile}>
-              <Text style={{ fontSize: tokens.fontSizeBase200, color: tokens.colorNeutralForeground3 }}>Stale ({formatBytes(summary.staleSizeBytes)})</Text>
+              <Text style={{ fontSize: tokens.fontSizeBase200, color: tokens.colorNeutralForeground3 }}>{formatString(strings.Report_StaleLabel, { bytes: formatBytes(summary.staleSizeBytes) })}</Text>
               <Text weight="semibold" style={{ display: 'block', fontSize: tokens.fontSizeBase500 }}>{summary.staleCount}</Text>
             </div>
             <div className={styles.statTile}>
-              <Text style={{ fontSize: tokens.fontSizeBase200, color: tokens.colorNeutralForeground3 }}>Very stale ({formatBytes(summary.veryStaleSizeBytes)})</Text>
+              <Text style={{ fontSize: tokens.fontSizeBase200, color: tokens.colorNeutralForeground3 }}>{formatString(strings.Report_VeryStaleLabel, { bytes: formatBytes(summary.veryStaleSizeBytes) })}</Text>
               <Text weight="semibold" style={{ display: 'block', fontSize: tokens.fontSizeBase500 }}>{summary.veryStaleCount}</Text>
             </div>
           </div>
 
           <div className={styles.row}>
-            <Checkbox label="Show archival candidates only" checked={staleOnly} onChange={(_, d) => setStaleOnly(!!d.checked)} />
+            <Checkbox label={strings.Report_ShowArchivalOnlyLabel} checked={staleOnly} onChange={(_, d) => setStaleOnly(!!d.checked)} />
             <Button
               icon={excelExporting ? <Spinner size="tiny" /> : <DocumentArrowDown24Regular />}
               onClick={handleExportExcel}
               disabled={excelExporting}
             >
-              {excelExporting ? 'Exporting…' : 'Export Excel'}
+              {excelExporting ? strings.Report_ExportingButton : strings.Report_ExportExcelButton}
             </Button>
             <Button
               icon={csvExporting ? <Spinner size="tiny" /> : <DocumentArrowDown24Regular />}
@@ -969,7 +957,7 @@ export const StorageReportView: React.FC<StorageReportViewProps> = ({
               onClick={handleExportCsv}
               disabled={csvExporting}
             >
-              {csvExporting ? 'Exporting…' : 'Export CSV'}
+              {csvExporting ? strings.Report_ExportingButton : strings.Report_ExportCsvButton}
             </Button>
           </div>
 
@@ -997,14 +985,14 @@ export const StorageReportView: React.FC<StorageReportViewProps> = ({
         weight="semibold"
         style={{ display: 'flex', alignItems: 'center', gap: '6px', marginBottom: tokens.spacingVerticalS, scrollMarginTop: tokens.spacingVerticalXL }}
       >
-        <History24Regular style={{ fontSize: '16px' }} /> Scan history
+        <History24Regular style={{ fontSize: '16px' }} /> {strings.Report_ScanHistoryHeading}
       </Text>
       {history.length === 0 ? (
-        <Body1 style={{ color: tokens.colorNeutralForeground3 }}>No saved scans yet — run a scan to save one.</Body1>
+        <Body1 style={{ color: tokens.colorNeutralForeground3 }}>{strings.Report_NoSavedScans}</Body1>
       ) : (
         <>
           <Body1 style={{ color: tokens.colorNeutralForeground3, fontSize: tokens.fontSizeBase200 }}>
-            Select two scans to compare growth in stale storage over time.
+            {strings.Report_SelectTwoToCompare}
           </Body1>
           {otherSiteCount > 0 && (
             <Button
@@ -1013,17 +1001,17 @@ export const StorageReportView: React.FC<StorageReportViewProps> = ({
               onClick={() => setShowAllSites((v) => !v)}
               style={{ padding: 0, minWidth: 'unset', height: 'auto', marginBottom: tokens.spacingVerticalXS }}
             >
-              {showAllSites ? 'Show only this site' : `Show reports from other sites (${otherSiteCount} hidden)`}
+              {showAllSites ? strings.Report_ShowOnlyThisSite : formatString(strings.Report_ShowOtherSites, { count: otherSiteCount })}
             </Button>
           )}
           {visibleHistory.length === 0 ? (
-            <Body1 style={{ color: tokens.colorNeutralForeground3 }}>No saved scans for this site yet.</Body1>
+            <Body1 style={{ color: tokens.colorNeutralForeground3 }}>{strings.Report_NoSavedScansForSite}</Body1>
           ) : visibleHistory.map((h) => (
             <div key={h.id} className={styles.historyRow}>
               <Checkbox
                 checked={compareIds.indexOf(h.id) !== -1}
                 onChange={() => toggleCompare(h.id)}
-                aria-label={`Compare scan from ${new Date(h.timestamp).toLocaleString()}`}
+                aria-label={formatString(strings.Report_CompareScanAria, { timestamp: new Date(h.timestamp).toLocaleString() })}
               />
               <Text style={{ minWidth: '160px' }}>{new Date(h.timestamp).toLocaleString()}</Text>
               <Badge appearance="tint" title={h.siteUrl}>{siteLabel(h.siteUrl)}</Badge>
@@ -1032,14 +1020,14 @@ export const StorageReportView: React.FC<StorageReportViewProps> = ({
               {h.summary.versionHistoryIncluded && (
                 <Badge appearance="tint">
                   {isVersionHistoryIncomplete(h.summary) ? '≥ ' : ''}
-                  {formatBytes(h.summary.totalSizeBytes + (h.summary.totalVersionSizeBytes ?? 0))} total
+                  {formatBytes(h.summary.totalSizeBytes + (h.summary.totalVersionSizeBytes ?? 0))}{strings.Report_TotalBadgeSuffix}
                 </Badge>
               )}
-              <Badge appearance="tint">{formatBytes(h.summary.totalSizeBytes)} current files</Badge>
+              <Badge appearance="tint">{formatBytes(h.summary.totalSizeBytes)}{strings.Report_CurrentFilesBadgeSuffix}</Badge>
               {h.summary.versionHistoryIncluded && (
-                <Badge appearance="tint">{formatBytes(h.summary.totalVersionSizeBytes ?? 0)} version history</Badge>
+                <Badge appearance="tint">{formatBytes(h.summary.totalVersionSizeBytes ?? 0)}{strings.Report_VersionHistoryBadgeSuffix}</Badge>
               )}
-              <Badge appearance="tint" color="warning">{h.summary.staleCount + h.summary.veryStaleCount} stale</Badge>
+              <Badge appearance="tint" color="warning">{h.summary.staleCount + h.summary.veryStaleCount}{strings.Report_StaleBadgeSuffix}</Badge>
               {/* Only when the file listing genuinely isn't retrievable. This was
                   a "Partial" badge shown for any report over 50,000 rows, which
                   described a saved-listing detail in a word that reads as "your
@@ -1048,9 +1036,9 @@ export const StorageReportView: React.FC<StorageReportViewProps> = ({
                 <Badge
                   appearance="tint"
                   color="informative"
-                  title="Browser storage was full, so this report's file listing was removed to make room for newer reports. Its totals and comparisons are unaffected."
+                  title={strings.Report_NoFileListTooltip}
                 >
-                  No file list
+                  {strings.Report_NoFileListBadge}
                 </Badge>
               )}
               <Button
@@ -1062,20 +1050,20 @@ export const StorageReportView: React.FC<StorageReportViewProps> = ({
                 // report's label, thresholds and site.
                 disabled={!!pendingViewId || scanning}
               >
-                View
+                {strings.Report_ViewButton}
               </Button>
               {confirmDeleteId === h.id ? (
                 <>
-                  <Text style={{ fontSize: tokens.fontSizeBase200 }}>Delete this scan?</Text>
-                  <Button size="small" appearance="primary" onClick={() => handleDelete(h.id)}>Delete</Button>
-                  <Button size="small" appearance="secondary" onClick={() => setConfirmDeleteId(null)}>Keep</Button>
+                  <Text style={{ fontSize: tokens.fontSizeBase200 }}>{strings.Report_DeleteConfirmText}</Text>
+                  <Button size="small" appearance="primary" onClick={() => handleDelete(h.id)}>{strings.Report_DeleteButton}</Button>
+                  <Button size="small" appearance="secondary" onClick={() => setConfirmDeleteId(null)}>{strings.Report_KeepButton}</Button>
                 </>
               ) : (
                 <Button
                   appearance="subtle"
                   size="small"
                   icon={<Delete24Regular />}
-                  aria-label={`Delete scan from ${new Date(h.timestamp).toLocaleString()}`}
+                  aria-label={formatString(strings.Report_DeleteScanAria, { timestamp: new Date(h.timestamp).toLocaleString() })}
                   onClick={() => setConfirmDeleteId(h.id)}
                 />
               )}
@@ -1086,35 +1074,33 @@ export const StorageReportView: React.FC<StorageReportViewProps> = ({
 
       {(comparison || comparing) && (
         <div className={styles.statTile} style={{ marginTop: tokens.spacingVerticalM }}>
-          <Text weight="semibold" style={{ display: 'block', marginBottom: tokens.spacingVerticalXS }}>Comparison</Text>
+          <Text weight="semibold" style={{ display: 'block', marginBottom: tokens.spacingVerticalXS }}>{strings.Report_ComparisonHeading}</Text>
           {comparing && !comparison && (
-            <Text style={{ display: 'block', color: tokens.colorNeutralForeground3 }}>Comparing…</Text>
+            <Text style={{ display: 'block', color: tokens.colorNeutralForeground3 }}>{strings.Report_ComparingText}</Text>
           )}
           {comparison && (
             <>
               {comparison.crossSite && (
                 <Text style={{ display: 'block', color: tokens.colorPaletteYellowForeground1 }}>
-                  ⚠ These two reports are from different sites — the comparison may not be meaningful.
+                  {strings.Report_CrossSiteWarning}
                 </Text>
               )}
               <Text style={{ display: 'block' }}>
-                Size change: {comparison.diff.sizeDeltaBytes >= 0 ? '+' : ''}{formatBytes(Math.abs(comparison.diff.sizeDeltaBytes))}
+                {formatString(strings.Report_SizeChangeLabel, { sign: comparison.diff.sizeDeltaBytes >= 0 ? '+' : '', bytes: formatBytes(Math.abs(comparison.diff.sizeDeltaBytes)) })}
               </Text>
               {/* Undefined, not 0, when either file listing is missing — showing
                   "0 new" for a report whose listing was evicted would be
                   indistinguishable from "nothing changed". */}
               {comparison.diff.newStaleCount != null && (
-                <Text style={{ display: 'block' }}>New archival candidates: {comparison.diff.newStaleCount.toLocaleString()}</Text>
+                <Text style={{ display: 'block' }}>{formatString(strings.Report_NewArchivalCandidates, { count: comparison.diff.newStaleCount.toLocaleString() })}</Text>
               )}
               {comparison.diff.resolvedStaleCount != null && (
-                <Text style={{ display: 'block' }}>Resolved (no longer stale): {comparison.diff.resolvedStaleCount.toLocaleString()}</Text>
+                <Text style={{ display: 'block' }}>{formatString(strings.Report_ResolvedStale, { count: comparison.diff.resolvedStaleCount.toLocaleString() })}</Text>
               )}
-              <Text style={{ display: 'block' }}>File count change: {comparison.diff.totalFilesDelta >= 0 ? '+' : ''}{comparison.diff.totalFilesDelta.toLocaleString()}</Text>
+              <Text style={{ display: 'block' }}>{formatString(strings.Report_FileCountChange, { sign: comparison.diff.totalFilesDelta >= 0 ? '+' : '', count: comparison.diff.totalFilesDelta.toLocaleString() })}</Text>
               {comparison.listingMissing && (
                 <Text style={{ display: 'block', marginTop: tokens.spacingVerticalXS, color: tokens.colorNeutralForeground3, fontSize: tokens.fontSizeBase200 }}>
-                  Per-file changes aren&apos;t shown because one of these reports no longer has its
-                  file listing stored. The size and count changes above are from the saved totals and
-                  are accurate.
+                  {strings.Report_ListingMissingNote}
                 </Text>
               )}
             </>
