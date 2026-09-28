@@ -4,6 +4,23 @@ All notable changes to this project are documented here.
 
 ---
 
+## [1.4.0] — 2026-09-28
+
+### Added
+
+- **Localization — 29 languages**
+  The entire web part interface — buttons, tooltips, column headers, warning and
+  error messages, and the Excel/CSV export column headers — is now localized.
+  Supported languages: English, Arabic, Chinese (Simplified and Traditional),
+  Czech, Danish, Dutch, Finnish, French, German, Greek, Hebrew, Hindi,
+  Hungarian, Indonesian, Italian, Japanese, Korean, Norwegian, Polish,
+  Portuguese (Brazil and Portugal), Romanian, Russian, Spanish, Swedish, Thai,
+  Turkish, Ukrainian, and Vietnamese. The language is selected automatically
+  from each user's own SharePoint UI language, with no configuration required;
+  an unsupported language falls back to English.
+
+---
+
 ## [1.3.1] — 2026-09-23
 
 ### Added

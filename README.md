@@ -205,6 +205,12 @@ config/
 
 ---
 
+## Language Support
+
+The web part's interface is available in **29 languages** — English plus Arabic, Chinese (Simplified & Traditional), Czech, Danish, Dutch, Finnish, French, German, Greek, Hebrew, Hindi, Hungarian, Indonesian, Italian, Japanese, Korean, Norwegian, Polish, Portuguese (Brazil & Portugal), Romanian, Russian, Spanish, Swedish, Thai, Turkish, Ukrainian, and Vietnamese — matching each user's own SharePoint UI language automatically, with no configuration required. Unsupported languages fall back to English.
+
+---
+
 ## Limitations
 
 - All tools require **Site Owner** access. Members, Visitors, Limited Access users, and guests cannot use any feature.

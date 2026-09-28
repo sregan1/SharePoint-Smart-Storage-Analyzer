@@ -1,6 +1,6 @@
 # SharePoint Smart Storage Analyzer — User Guide
 
-**Version 1.3.1**
+**Version 1.4.0**
 **Applies to:** SharePoint Online
 
 ---
@@ -16,9 +16,10 @@
 7. [Understanding Archival Status](#understanding-archival-status)
 8. [Settings](#settings)
 9. [Web Part Configuration](#web-part-configuration)
-10. [Security & Privacy](#security--privacy)
-11. [Frequently Asked Questions](#frequently-asked-questions)
-12. [Troubleshooting](#troubleshooting)
+10. [Language Support](#language-support)
+11. [Security & Privacy](#security--privacy)
+12. [Frequently Asked Questions](#frequently-asked-questions)
+13. [Troubleshooting](#troubleshooting)
 
 ---
 
@@ -272,6 +273,14 @@ By default, the web part opens on **Home**, letting the user choose. You can cha
 3. Click the web part, then click its **pencil (edit)** icon.
 4. In the property pane, under **General**, use the **Default view on open** dropdown to choose **Home**, **Tree View**, **List View**, or **Storage Report**.
 5. **Republish** the page to save the change.
+
+---
+
+## Language Support
+
+The web part's interface — buttons, column headers, tooltips, warning messages, and the Excel/CSV export column headers — is available in **29 languages**: English plus Arabic, Chinese (Simplified and Traditional), Czech, Danish, Dutch, Finnish, French, German, Greek, Hebrew, Hindi, Hungarian, Indonesian, Italian, Japanese, Korean, Norwegian, Polish, Portuguese (Brazil and Portugal), Romanian, Russian, Spanish, Swedish, Thai, Turkish, Ukrainian, and Vietnamese.
+
+The language shown is picked up automatically from each user's own SharePoint UI language setting — there's nothing to configure, and different users on the same page can each see the tool in their own language. If a user's language isn't one of the 29 supported, the tool falls back to English.
 
 ---
 
