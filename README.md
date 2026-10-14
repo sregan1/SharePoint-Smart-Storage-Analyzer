@@ -113,7 +113,11 @@ Pushing a `vX.Y.Z` tag also triggers a GitHub Actions workflow (`.github/workflo
 
 1. Upload `smart-storage-analyzer.sppkg` to the tenant or site App Catalog.
 2. Click **Deploy** when prompted.
-3. Navigate to the SharePoint page where you want to add the web part, click **Edit**, and add **Smart Storage Analyzer** from the web part picker.
+3. On each site where you want the analyzer, choose **Add an app** and add **Smart Storage Analyzer**. A **Storage Analyzer** page is created automatically in Site Pages with the web part already on it — open it from **Site contents > Site Pages**.
+
+The web part can also be added manually to any other page: click **Edit** and pick **Smart Storage Analyzer** from the web part picker.
+
+> The package is installed per site (it is not available as a tenant-wide deployment), because the page is created by a site-scoped feature that activates when the app is added.
 
 ---
 

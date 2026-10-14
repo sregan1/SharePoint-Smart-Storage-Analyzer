@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Elements xmlns="http://schemas.microsoft.com/sharepoint/">
+  <!-- Provisions a ready-to-use "Storage Analyzer" modern page in Site Pages when the app is added to a site.
+       Page metadata (canvas content, content type, layout) lives inside Storage-Analyzer.aspx. -->
+  <Module Name="StorageAnalyzerPage" Url="SitePages">
+    <File Path="Storage-Analyzer.aspx" Url="Storage-Analyzer.aspx" Type="GhostableInLibrary" />
+  </Module>
+</Elements>

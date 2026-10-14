@@ -3,10 +3,22 @@
   "solution": {
     "name": "Smart Storage Analyzer",
     "id": "4c10f106-ac82-4037-9553-c3cfdfaa443b",
-    "version": "1.4.0.0",
+    "version": "1.5.0.0",
     "includeClientSideAssets": true,
-    "skipFeatureDeployment": true,
+    "skipFeatureDeployment": false,
     "isDomainIsolated": false,
+    "features": [
+      {
+        "title": "Smart Storage Analyzer Page",
+        "description": "Creates a ready-to-use Storage Analyzer page with the web part already added when the app is added to a site.",
+        "id": "1f7479c3-0411-4b8e-a9ec-832bc185f199",
+        "version": "1.0.0.0",
+        "assets": {
+          "elementManifests": ["elements.xml"],
+          "elementFiles": ["Storage-Analyzer.aspx"]
+        }
+      }
+    ],
     "developer": {
       "name": "",
       "privacyUrl": "",

@@ -4,6 +4,21 @@ All notable changes to this project are documented here.
 
 ---
 
+## [1.5.0] — 2026-10-13
+
+### Added
+
+- **One-step setup**
+  Adding the app to a site now creates a ready-to-use **Storage Analyzer** page in Site Pages with
+  the web part already placed on it. No manual page creation or web part placement is needed.
+
+### Changed
+
+- The app is now installed per site rather than deployable tenant-wide, so the page can be created
+  when the app is added.
+
+---
+
 ## [1.4.0] — 2026-09-28
 
 ### Added

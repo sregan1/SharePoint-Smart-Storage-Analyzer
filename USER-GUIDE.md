@@ -1,6 +1,6 @@
 # SharePoint Smart Storage Analyzer — User Guide
 
-**Version 1.4.0**
+**Version 1.5.0**
 **Applies to:** SharePoint Online
 
 ---
@@ -61,7 +61,9 @@ You must be a **Site Owner** on the site (or otherwise hold the Manage Web / Man
 
 ### Accessing the Web Part
 
-The web part is added to a SharePoint page by a site owner or administrator. Once added, navigate to the page where it has been placed — the web part automatically connects to that site; no setup or configuration is required to get started.
+A site owner or administrator adds the **Smart Storage Analyzer** app to the site (**Settings → Add an app**). This automatically creates a **Storage Analyzer** page in **Site contents → Site Pages** with the web part already on it — just open that page. The web part automatically connects to that site; no setup or configuration is required to get started.
+
+The app is installed one site at a time, so repeat this on each site you want to analyze. The web part can also be added manually to any other page by editing the page and choosing **Smart Storage Analyzer** from the web part picker.
 
 By default, it opens on the **Home** screen, where you pick Tree View, List View, or Storage Report. (A site administrator can change this so the web part opens directly on one of the three instead — see [Web Part Configuration](#web-part-configuration).)
 
