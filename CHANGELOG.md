@@ -12,6 +12,10 @@ All notable changes to this project are documented here.
   Adding the app to a site now creates a ready-to-use **Storage Analyzer** page in Site Pages with
   the web part already placed on it. No manual page creation or web part placement is needed.
 
+- **Bulk install script**
+  `scripts/Install-StorageAnalyzer.ps1` adds the app to many sites in one run (PnP PowerShell), with a
+  `-WhatIf` preview, an explicit `-AllSites` switch (or `-SiteUrls` for specific sites), an exclude list, optional upgrade of older installs, and a CSV results log.
+
 ### Changed
 
 - The app is now installed per site rather than deployable tenant-wide, so the page can be created

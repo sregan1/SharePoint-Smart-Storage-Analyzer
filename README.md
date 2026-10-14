@@ -111,13 +111,41 @@ Pushing a `vX.Y.Z` tag also triggers a GitHub Actions workflow (`.github/workflo
 
 **Deploy to SharePoint:**
 
-1. Upload `smart-storage-analyzer.sppkg` to the tenant or site App Catalog.
-2. Click **Deploy** when prompted.
+1. Upload `smart-storage-analyzer.sppkg` to the **tenant** App Catalog (site app catalogs are not supported for packages that provision a page).
+2. Click **Deploy** when prompted. Do not tick "Make this solution available to all sites" — it isn't available for this package.
 3. On each site where you want the analyzer, choose **Add an app** and add **Smart Storage Analyzer**. A **Storage Analyzer** page is created automatically in Site Pages with the web part already on it — open it from **Site contents > Site Pages**.
 
 The web part can also be added manually to any other page: click **Edit** and pick **Smart Storage Analyzer** from the web part picker.
 
 > The package is installed per site (it is not available as a tenant-wide deployment), because the page is created by a site-scoped feature that activates when the app is added.
+
+**Adding the app to many sites at once**
+
+Because installation is per site, [scripts/Install-StorageAnalyzer.ps1](scripts/Install-StorageAnalyzer.ps1) runs `Install-PnPApp` across your sites for you. It needs the [PnP.PowerShell](https://pnp.github.io/powershell/) module, SharePoint administrator rights, and the client ID of an Entra ID app registration for PnP interactive sign-in.
+
+```powershell
+# 1. Preview — shows what would happen on every eligible site (-AllSites), changes nothing
+.\scripts\Install-StorageAnalyzer.ps1 -AdminUrl https://contoso-admin.sharepoint.com -ClientId <guid> -AllSites -WhatIf
+
+# 2. Install on specific sites
+.\scripts\Install-StorageAnalyzer.ps1 -AdminUrl https://contoso-admin.sharepoint.com -ClientId <guid> `
+    -SiteUrls https://contoso.sharepoint.com/sites/finance, https://contoso.sharepoint.com/sites/legal
+
+# 3. Install on all sites (-AllSites: team, communication and classic team sites) and upgrade older installs
+.\scripts\Install-StorageAnalyzer.ps1 -AdminUrl https://contoso-admin.sharepoint.com -ClientId <guid> -AllSites -Update
+```
+
+| Parameter | Purpose |
+|---|---|
+| `-AdminUrl` | Tenant admin URL (required) |
+| `-ClientId` | Entra ID app registration client ID for PnP sign-in (required) |
+| `-SiteUrls` | Process only these sites. Required unless `-AllSites` is used |
+| `-AllSites` | Process every eligible site in the tenant. Required unless `-SiteUrls` is used. Nothing runs without one of the two |
+| `-ExcludeUrls` | Sites to skip (useful with `-AllSites`) |
+| `-Update` | Also upgrade sites that have an older version installed |
+| `-WhatIf` | Preview only |
+
+OneDrive, search, app catalog and redirect sites are skipped automatically. Sites that already have the app are skipped unless `-Update` is given and a newer version is available. A CSV with the per-site result is written to the current folder. Run it again later to cover newly created sites. Try it on a few sites with `-SiteUrls` before running it tenant-wide.
 
 ---
 
