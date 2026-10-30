@@ -1,6 +1,6 @@
 # SharePoint Smart Storage Analyzer — Storage Usage & Archival Report Web Part
 
-[![Website](https://img.shields.io/badge/Website-sharepointsmartsolutions.com-blue)](https://sharepointsmartsolutions.com/smart-data-analyzer) [![User Guide](https://img.shields.io/badge/User%20Guide-USER--GUIDE.md-informational)](USER-GUIDE.md) [![Download](https://img.shields.io/badge/Download-Latest%20Release-CA5010?logo=github&logoColor=white)](../../releases/latest) [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![Website](https://img.shields.io/badge/Website-sharepointsmartsolutions.com-blue)](https://sharepointsmartsolutions.com/smart-storage-analyzer) [![User Guide](https://img.shields.io/badge/User%20Guide-USER--GUIDE.md-informational)](USER-GUIDE.md) [![Download](https://img.shields.io/badge/Download-Latest%20Release-CA5010?logo=github&logoColor=white)](../../releases/latest) [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
 A free, open-source SPFx web part that helps SharePoint site owners find storage that's safe to archive — browsing libraries and folders, and scanning a site for stale files — entirely from the browser, with no PowerShell or third-party tools required.
 
@@ -253,6 +253,21 @@ The web part's interface is available in **29 languages** — English plus Arabi
 
 ---
 
+## About
+
+Originally created in July 2026 by Sean Regan.
+
+Copyright (c) 2026 Vivity, Inc.
+
+Part of SharePoint Smart Solutions, a software product brand of Vivity, Inc.
+
+## Disclaimer
+
+This software is provided "as is", without warranty of any kind, under the terms of the MIT License. To the extent
+permitted by law, Vivity, Inc. and the authors are not liable for any loss or damage arising from its use. Review
+results and any changes before you rely on them. This project is not affiliated with or endorsed by Microsoft.
+SharePoint and Microsoft 365 are trademarks of Microsoft Corporation.
+
 ## License
 
-[MIT](LICENSE) © 2026 Sean Regan
+[MIT](LICENSE) © 2026 Vivity, Inc.
